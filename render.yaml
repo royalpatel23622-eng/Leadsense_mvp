@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: leadsense-mvp
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 24.22.1
+      - key: NODE_ENV
+        value: production
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SECRET_KEY
+        sync: false
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: APP_URL
+        sync: false
+      - key: YOUTUBE_DAILY_SEARCH_LIMIT
+        value: 40
+      - key: API_RATE_LIMIT_PER_MINUTE
+        value: 60
