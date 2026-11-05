@@ -185,11 +185,12 @@ async function youtubeSearch(body) {
   if (regionCode && !/^[A-Z]{2}$/.test(regionCode)) throw Object.assign(new Error('Choose a valid two-letter country code.'), { status: 400, code: 'INVALID_REGION' });
   const relevanceLanguage = optionalText(body.language, 2)?.toLowerCase();
   if (relevanceLanguage && !/^[a-z]{2}$/.test(relevanceLanguage)) throw Object.assign(new Error('Choose a valid two-letter language code.'), { status: 400, code: 'INVALID_LANGUAGE' });
+  const pageToken = optionalText(body.pageToken, 300);
 
   const usage = await reserveSearchCall();
   const search = await googleGet('search', {
     key: YOUTUBE_KEY, part: 'snippet', type: 'channel', q: query, maxResults,
-    regionCode, relevanceLanguage, pageToken: optionalText(body.pageToken, 300),
+    regionCode, relevanceLanguage, pageToken,
     fields: 'nextPageToken,items(id(channelId),snippet(title,description,channelId))',
   });
   const ids = [...new Set((search.items || []).map(item => item.id?.channelId || item.snippet?.channelId).filter(Boolean))];
