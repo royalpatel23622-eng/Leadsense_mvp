@@ -6,8 +6,8 @@ The backend is a dependency-free Node.js web server. It serves the existing fron
 
 ## What works
 
-- **YouTube discovery:** query channels through the official YouTube Data API v3, request channel details in one batch, show raw public channel fields, apply a country-declared filter, sort by subscriber count, and load another page.
-- **Recent upload inspection:** load a channel’s current public details and up to 10 recent uploads when requested. Each video’s raw public view/like/comment counts are shown as returned; the data is not stored or turned into scores.
+- **YouTube discovery:** search by topic, select a creator-declared country and subscriber range, and see up to 50 public channel matches per page. Each result explains which search phrase, country, and subscriber range matched. Load another page when you want to check more candidates.
+- **Recent upload inspection:** load a channel’s current public details and up to 10 recent uploads when requested. Review public thumbnails and editing yourself; private audience-retention data is not available in public channel search.
 - **Search filter draft:** paste a natural-language description and review a rule-based draft for service, search words, countries, subscriber range, and result count. The parser is not an AI model. Each field is editable before searching.
 - **Account access:** Supabase Auth handles sign-up and sign-in. Session tokens use secure, HTTP-only cookies. CRM records and saved search settings are scoped to the signed-in user on the server.
 - **Admin area:** server-side role checks protect admin routes. Admins can review accounts, usage, search status, errors, and service configuration; change roles/status/plans; and set per-user daily search limits. API secret values are never returned.
@@ -65,7 +65,7 @@ If you do not have a Supabase project yet, you can still run the app in demo mod
 
 Opening **Review recent uploads** requests channel details, its uploads playlist, and up to 10 videos. These add YouTube API requests. Each account can inspect up to 20 channels per day by default; change that with `USER_DAILY_ANALYSIS_LIMIT`.
 
-The app does not scrape YouTube pages, collect contact information, estimate revenue, or create creator scores. The API key is never included in frontend HTML or requests from the browser.
+The app does not scrape YouTube pages, collect email addresses or phone numbers, estimate revenue, or create creator scores. Users can open a channel and check contact links that the creator chose to make public. The API key is never included in frontend HTML or requests from the browser.
 
 ## Deploy to Render
 
