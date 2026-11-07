@@ -3,6 +3,8 @@ import { readFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { interpretSearchQuery } from './lib/search-query.mjs';
+import { dedupeChannelsById, filterByDeclaredCountry, filterByPublicSubscribers, normalizeSubscriberRange } from './lib/search-filters.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = path.join(ROOT, 'outputs');
@@ -24,8 +26,11 @@ if (existsSync(envFile)) {
 const PORT = Number(process.env.PORT || 3000);
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').replace(/\/+$/, '');
 const SUPABASE_KEY = process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const SUPABASE_AUTH_KEY = process.env.SUPABASE_PUBLISHABLE_KEY || SUPABASE_KEY;
 const YOUTUBE_KEY = process.env.YOUTUBE_API_KEY || '';
 const SEARCH_LIMIT = Math.max(1, Math.min(1000, Number(process.env.YOUTUBE_DAILY_SEARCH_LIMIT || 40)));
+const USER_DAILY_SEARCH_LIMIT = Math.max(1, Math.min(1000, Number(process.env.USER_DAILY_SEARCH_LIMIT || 10)));
+const USER_DAILY_ANALYSIS_LIMIT = Math.max(1, Math.min(1000, Number(process.env.USER_DAILY_ANALYSIS_LIMIT || 20)));
 const RATE_LIMIT = Math.max(10, Math.min(1000, Number(process.env.API_RATE_LIMIT_PER_MINUTE || 60)));
 const LIMIT_WINDOW_MS = 60_000;
 const ipBuckets = new Map();
@@ -133,11 +138,85 @@ async function dbRequest(tableOrRpc, { method = 'GET', query = '', body, prefer 
   if (!response.ok) {
     const detail = typeof data?.message === 'string' ? data.message : '';
     const err = new Error(detail || `Database request failed (${response.status}).`);
-    err.code = detail.includes('DAILY_SEARCH_LIMIT') ? 'DAILY_SEARCH_LIMIT' : 'DATABASE_ERROR';
-    err.status = err.code === 'DAILY_SEARCH_LIMIT' ? 429 : response.status >= 500 ? 503 : 400;
+    err.code = detail.includes('DAILY_SEARCH_LIMIT') ? 'DAILY_SEARCH_LIMIT' : detail.includes('USER_DAILY_SEARCH_LIMIT') ? 'USER_DAILY_SEARCH_LIMIT' : detail.includes('USER_DAILY_ANALYSIS_LIMIT') ? 'USER_DAILY_ANALYSIS_LIMIT' : 'DATABASE_ERROR';
+    err.status = ['DAILY_SEARCH_LIMIT','USER_DAILY_SEARCH_LIMIT','USER_DAILY_ANALYSIS_LIMIT'].includes(err.code) ? 429 : response.status >= 500 ? 503 : 400;
     throw err;
   }
   return data;
+}
+
+function cookieValue(req, name) {
+  const cookies = String(req.headers.cookie || '').split(';');
+  for (const cookie of cookies) {
+    const split = cookie.trim().indexOf('=');
+    if (split < 0 || cookie.slice(0, split).trim() !== name) continue;
+    try { return decodeURIComponent(cookie.slice(split + 1)); } catch { return null; }
+  }
+  return null;
+}
+
+function sessionCookies(tokens, clear = false) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  const attributes = `; HttpOnly; SameSite=Lax; Path=/${secure}`;
+  if (clear) return [`leadsense_at=; Max-Age=0${attributes}`, `leadsense_rt=; Max-Age=0${attributes}`];
+  const accessAge = Math.max(60, Math.min(86_400, Number(tokens.expires_in) || 3600));
+  return [
+    `leadsense_at=${encodeURIComponent(tokens.access_token)}; Max-Age=${accessAge}${attributes}`,
+    `leadsense_rt=${encodeURIComponent(tokens.refresh_token)}; Max-Age=2592000${attributes}`,
+  ];
+}
+
+async function supabaseAuth(pathname, { method = 'GET', body, accessToken } = {}) {
+  if (!SUPABASE_URL || !SUPABASE_AUTH_KEY) throw Object.assign(new Error('Sign-in is not configured. Add your Supabase project URL and API key to the server settings.'), { status: 503, code: 'AUTH_NOT_CONFIGURED' });
+  const headers = { apikey: SUPABASE_AUTH_KEY, Accept: 'application/json' };
+  if (accessToken) headers.Authorization = `Bearer ${accessToken}`;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  const response = await fetch(`${SUPABASE_URL}/auth/v1${pathname}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(12_000) });
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message = response.status === 400 || response.status === 422 ? (data?.msg || data?.message || data?.error_description || 'Check your email and password, then try again.') : 'Supabase sign-in is temporarily unavailable.';
+    throw Object.assign(new Error(message), { status: response.status >= 500 ? 503 : response.status, code: response.status === 400 ? 'AUTH_INVALID_CREDENTIALS' : 'AUTH_PROVIDER_ERROR' });
+  }
+  return data;
+}
+
+async function currentUser(req, res) {
+  let accessToken = cookieValue(req, 'leadsense_at');
+  if (!accessToken) return null;
+  let authUser;
+  try { authUser = await supabaseAuth('/user', { accessToken }); }
+  catch (error) {
+    const refreshToken = cookieValue(req, 'leadsense_rt');
+    if (!refreshToken || error.status !== 401) return null;
+    const tokens = await supabaseAuth('/token?grant_type=refresh_token', { method: 'POST', body: { refresh_token: refreshToken } });
+    res.setHeader('Set-Cookie', sessionCookies(tokens));
+    accessToken = tokens.access_token;
+    authUser = tokens.user;
+  }
+  const rows = await dbRequest('app_users', { query: new URLSearchParams({ select: 'id,email,role,status,plan,search_limit_override,created_at', id: `eq.${authUser.id}`, limit: '1' }).toString() });
+  const profile = rows?.[0];
+  if (!profile || profile.status !== 'active') return null;
+  return { id: profile.id, email: profile.email || authUser.email || '', role: profile.role, plan: profile.plan, search_limit_override: profile.search_limit_override, created_at: profile.created_at };
+}
+
+async function adminAudit(adminId, action, targetId = null, details = {}) {
+  await dbRequest('admin_audit_logs', { method: 'POST', body: { admin_user_id: adminId, action, target_user_id: targetId, details }, prefer: 'return=minimal' });
+}
+
+async function requireAdmin(req, res) {
+  const user = await currentUser(req, res);
+  if (!user) { safeError(res, 401, 'AUTH_REQUIRED', 'Sign in with an active account to continue.'); return null; }
+  if (user.role !== 'admin') { safeError(res, 403, 'ADMIN_REQUIRED', 'This area is only available to an administrator.'); return null; }
+  return user;
+}
+
+async function dbCount(table, filter = '') {
+  const headers = { apikey: SUPABASE_KEY, Prefer: 'count=exact', Range: '0-0' };
+  if (!SUPABASE_KEY.startsWith('sb_secret_')) headers.Authorization = `Bearer ${SUPABASE_KEY}`;
+  const response = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${filter ? `${filter}&` : ''}select=id`, { method: 'HEAD', headers, signal: AbortSignal.timeout(12_000) });
+  if (!response.ok) throw Object.assign(new Error(`Could not read ${table} totals.`), { status: 503, code: 'DATABASE_ERROR' });
+  const match = response.headers.get('content-range')?.match(/\/(\d+)$/);
+  return Number(match?.[1] || 0);
 }
 
 async function currentUsage() {
@@ -157,6 +236,16 @@ async function reserveSearchCall() {
   if (localSearchCalls >= SEARCH_LIMIT) throw Object.assign(new Error('This app has reached its daily search limit. Try again tomorrow.'), { status: 429, code: 'DAILY_SEARCH_LIMIT' });
   localSearchCalls += 1;
   return localSearchCalls;
+}
+
+async function reserveUserSearch(userId, limit = USER_DAILY_SEARCH_LIMIT) {
+  const count = await dbRequest('rpc/take_user_search_slot', { method: 'POST', body: { p_user_id: userId, p_daily_limit: limit } });
+  return Number(count);
+}
+
+async function reserveUserAnalysis(userId) {
+  const count = await dbRequest('rpc/take_user_analysis_slot', { method: 'POST', body: { p_user_id: userId, p_daily_limit: USER_DAILY_ANALYSIS_LIMIT } });
+  return Number(count);
 }
 
 function parseGoogleError(status, payload) {
@@ -181,6 +270,7 @@ async function youtubeSearch(body) {
   if (!YOUTUBE_KEY) throw Object.assign(new Error('Live YouTube search is not set up yet. Add YOUTUBE_API_KEY on the server, then restart the app.'), { status: 503, code: 'YOUTUBE_NOT_CONFIGURED' });
   const query = requireText(body.query, 'Search phrase', 120);
   const maxResults = Math.max(1, Math.min(50, Number(body.maxResults) || 20));
+  const { min: minSubscribers, max: maxSubscribers } = normalizeSubscriberRange(body.minSubscribers, body.maxSubscribers);
   const regionCode = optionalText(body.regionCode, 2)?.toUpperCase();
   if (regionCode && !/^[A-Z]{2}$/.test(regionCode)) throw Object.assign(new Error('Choose a valid two-letter country code.'), { status: 400, code: 'INVALID_REGION' });
   const relevanceLanguage = optionalText(body.language, 2)?.toLowerCase();
@@ -193,7 +283,7 @@ async function youtubeSearch(body) {
     regionCode, relevanceLanguage, pageToken,
     fields: 'nextPageToken,items(id(channelId),snippet(title,description,channelId))',
   });
-  const ids = [...new Set((search.items || []).map(item => item.id?.channelId || item.snippet?.channelId).filter(Boolean))];
+  const ids = dedupeChannelsById((search.items || []).map(item => ({ channelId: item.id?.channelId || item.snippet?.channelId })).filter(item => item.channelId)).map(item => item.channelId);
   if (ids.length === 0) return { items: [], nextPageToken: search.nextPageToken || null, usage: { calls: usage, limit: SEARCH_LIMIT, source: 'this app only' } };
 
   const details = await googleGet('channels', {
@@ -216,16 +306,46 @@ async function youtubeSearch(body) {
     fetchedAt: new Date().toISOString(),
     source: 'YouTube Data API',
   }));
-  const declaredCountries = Array.isArray(body.declaredCountries) ? body.declaredCountries.filter(x => typeof x === 'string' && /^[A-Z]{2}$/.test(x)).slice(0, 20) : [];
+  const declaredCountries = Array.isArray(body.declaredCountries) ? body.declaredCountries.slice(0, 20) : [];
+  if (declaredCountries.some(code => typeof code !== 'string' || !/^[A-Z]{2}$/.test(code))) throw Object.assign(new Error('Use two-letter country codes for creator-country filters.'), { status: 400, code: 'INVALID_COUNTRY_FILTER' });
   const includeUnknown = body.includeUnknown !== false;
-  const excludeIndia = body.excludeIndia !== false;
-  const filtered = items.filter(item => {
-    if (excludeIndia && item.countryCode === 'IN') return false;
-    if (declaredCountries.length && item.countryCode && !declaredCountries.includes(item.countryCode)) return false;
-    if (declaredCountries.length && !item.countryCode && !includeUnknown) return false;
-    return true;
-  });
-  return { items: filtered, nextPageToken: search.nextPageToken || null, usage: { calls: usage, limit: SEARCH_LIMIT, source: 'this app only' } };
+  const unknownCountryOnly = body.unknownCountryOnly === true;
+  const excludeIndia = body.excludeIndia === true;
+  const countryFiltered = filterByDeclaredCountry(items.filter(item => !(excludeIndia && item.countryCode === 'IN')), declaredCountries, includeUnknown, unknownCountryOnly);
+  const subscriberFiltered = filterByPublicSubscribers(countryFiltered, { min: minSubscribers, max: maxSubscribers }, body.includeUnknownSubscribers !== false);
+  return { items: subscriberFiltered, nextPageToken: search.nextPageToken || null, filtersApplied: { query, minSubscribers, maxSubscribers, declaredCountries, unknownCountryOnly, excludeIndia }, usage: { calls: usage, limit: SEARCH_LIMIT, source: 'this app only' } };
+}
+
+async function youtubeChannelInspection(body) {
+  if (!YOUTUBE_KEY) throw Object.assign(new Error('Live YouTube search is not set up yet. Add YOUTUBE_API_KEY on the server, then restart the app.'), { status: 503, code: 'YOUTUBE_NOT_CONFIGURED' });
+  const channelId = requireText(body.channelId, 'Channel ID', 64);
+  if (!/^UC[a-zA-Z0-9_-]{22}$/.test(channelId)) throw Object.assign(new Error('That YouTube channel ID is not valid. Open a live search result and try again.'), { status: 400, code: 'INVALID_CHANNEL_ID' });
+  const channelResponse = await googleGet('channels', { key: YOUTUBE_KEY, part: 'snippet,statistics,contentDetails', id: channelId, fields: 'items(id,snippet(title,description,customUrl,country,publishedAt,thumbnails(default,medium,high)),statistics(subscriberCount,viewCount,videoCount),contentDetails(relatedPlaylists(uploads)))' });
+  const channel = channelResponse.items?.[0];
+  if (!channel) throw Object.assign(new Error('YouTube could not find that public channel.'), { status: 404, code: 'CHANNEL_NOT_FOUND' });
+  const uploadsPlaylist = channel.contentDetails?.relatedPlaylists?.uploads;
+  if (!uploadsPlaylist) return { channel: { channelId, name: channel.snippet?.title || 'Untitled channel', description: channel.snippet?.description || '', countryCode: channel.snippet?.country || null, publishedAt: channel.snippet?.publishedAt || null, subscribers: channel.statistics?.subscriberCount ?? null, totalViews: channel.statistics?.viewCount ?? null, videoCount: channel.statistics?.videoCount ?? null }, videos: [], fetchedAt: new Date().toISOString(), source: 'YouTube Data API' };
+  const playlist = await googleGet('playlistItems', { key: YOUTUBE_KEY, part: 'snippet,contentDetails', playlistId: uploadsPlaylist, maxResults: 10, fields: 'items(contentDetails(videoId,videoPublishedAt),snippet(title,description,publishedAt,thumbnails(default,medium,high)))' });
+  const videoIds = [...new Set((playlist.items || []).map(item => item.contentDetails?.videoId).filter(Boolean))];
+  const videoResponse = videoIds.length ? await googleGet('videos', { key: YOUTUBE_KEY, part: 'snippet,statistics', id: videoIds.join(','), fields: 'items(id,snippet(title,description,publishedAt,thumbnails(default,medium,high)),statistics(viewCount,likeCount,commentCount))' }) : { items: [] };
+  const videosById = new Map((videoResponse.items || []).map(video => [video.id, video]));
+  const videos = videoIds.map(id => videosById.get(id)).filter(Boolean).map(video => ({
+    videoId: video.id,
+    title: video.snippet?.title || 'Untitled video',
+    description: video.snippet?.description || '',
+    publishedAt: video.snippet?.publishedAt || null,
+    thumbnail: video.snippet?.thumbnails?.medium?.url || video.snippet?.thumbnails?.default?.url || null,
+    views: video.statistics?.viewCount ?? null,
+    likes: video.statistics?.likeCount ?? null,
+    comments: video.statistics?.commentCount ?? null,
+    videoUrl: `https://www.youtube.com/watch?v=${encodeURIComponent(video.id)}`,
+  }));
+  return {
+    channel: { channelId, name: channel.snippet?.title || 'Untitled channel', description: channel.snippet?.description || '', customUrl: channel.snippet?.customUrl || null, countryCode: channel.snippet?.country || null, publishedAt: channel.snippet?.publishedAt || null, subscribers: channel.statistics?.subscriberCount ?? null, totalViews: channel.statistics?.viewCount ?? null, videoCount: channel.statistics?.videoCount ?? null, channelUrl: `https://www.youtube.com/channel/${encodeURIComponent(channelId)}` },
+    videos,
+    fetchedAt: new Date().toISOString(),
+    source: 'YouTube Data API',
+  };
 }
 
 function scoreEvidence(evidence) {
@@ -263,11 +383,57 @@ function prospectInput(body, partial = false) {
   return out;
 }
 
+function savedSearchFilters(input) {
+  if (input == null) return {};
+  if (typeof input !== 'object' || Array.isArray(input)) throw Object.assign(new Error('Search filters must be an object.'), { status: 400, code: 'INVALID_FILTERS' });
+  const { min, max } = normalizeSubscriberRange(input.minSubscribers, input.maxSubscribers);
+  const service = optionalText(input.service, 100);
+  const searchTerms = optionalText(input.searchTerms, 120);
+  const declaredCountries = Array.isArray(input.declaredCountries) ? input.declaredCountries.slice(0, 20) : [];
+  if (declaredCountries.some(code => typeof code !== 'string' || !/^[A-Z]{2}$/.test(code))) throw Object.assign(new Error('Use two-letter country codes in the saved filter.'), { status: 400, code: 'INVALID_FILTERS' });
+  const requestedCount = input.requestedCount == null ? 20 : Number(input.requestedCount);
+  if (!Number.isSafeInteger(requestedCount) || requestedCount < 1 || requestedCount > 50) throw Object.assign(new Error('Choose from 1 to 50 channels per search.'), { status: 400, code: 'INVALID_FILTERS' });
+  return { service, searchTerms, minSubscribers: min, maxSubscribers: max, declaredCountries: [...new Set(declaredCountries)], requestedCount, includeUnknownSubscribers: input.includeUnknownSubscribers !== false };
+}
+
 async function handleApi(req, res, url) {
   const pathname = url.pathname;
   const method = req.method || 'GET';
   if (!withinRateLimit(req, res)) return;
   if (['POST','PATCH','DELETE'].includes(method) && !isSameOrigin(req)) return safeError(res, 403, 'ORIGIN_CHECK_FAILED', 'This request did not come from this app. Refresh the page and try again.');
+
+  if (pathname === '/api/auth/signup' && method === 'POST') {
+    const body = await readJson(req, 8_000);
+    const email = requireText(body.email, 'Email', 254).toLowerCase();
+    const password = requireText(body.password, 'Password', 256);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw Object.assign(new Error('Enter a valid email address.'), { status: 400, code: 'INVALID_EMAIL' });
+    if (password.length < 12) throw Object.assign(new Error('Use a password with at least 12 characters.'), { status: 400, code: 'WEAK_PASSWORD' });
+    const data = await supabaseAuth('/signup', { method: 'POST', body: { email, password } });
+    return send(res, 202, { ok: true, confirmationRequired: !data?.access_token, message: data?.access_token ? 'Account created. You can now sign in.' : 'Account created. Check your email to confirm it, then sign in.' });
+  }
+
+  if (pathname === '/api/auth/login' && method === 'POST') {
+    const body = await readJson(req, 8_000);
+    const email = requireText(body.email, 'Email', 254).toLowerCase();
+    const password = requireText(body.password, 'Password', 256);
+    const tokens = await supabaseAuth('/token?grant_type=password', { method: 'POST', body: { email, password } });
+    const rows = await dbRequest('app_users', { query: new URLSearchParams({ select: 'id,email,role,status,plan,search_limit_override,created_at', id: `eq.${tokens.user.id}`, limit: '1' }).toString() });
+    const profile = rows?.[0];
+    if (!profile) throw Object.assign(new Error('Account tables are not ready. Apply migrations/002_accounts_search_history.sql in Supabase, then sign in again.'), { status: 503, code: 'PROFILE_SCHEMA_NOT_READY' });
+    if (profile.status !== 'active') throw Object.assign(new Error('This account is currently paused. Contact the workspace administrator.'), { status: 403, code: 'ACCOUNT_SUSPENDED' });
+    res.setHeader('Set-Cookie', sessionCookies(tokens));
+    return send(res, 200, { authenticated: true, user: { id: profile.id, email: profile.email || email, role: profile.role, plan: profile.plan } });
+  }
+
+  if (pathname === '/api/auth/logout' && method === 'POST') {
+    res.setHeader('Set-Cookie', sessionCookies(null, true));
+    return send(res, 200, { authenticated: false });
+  }
+
+  if (pathname === '/api/auth/session' && method === 'GET') {
+    const user = await currentUser(req, res);
+    return send(res, 200, { authenticated: Boolean(user), user });
+  }
 
   if (pathname === '/api/health' && method === 'GET') {
     let database = databaseConfigured() ? 'configured' : 'not_configured';
@@ -276,22 +442,120 @@ async function handleApi(req, res, url) {
       try { usage = await currentUsage(); database = 'connected'; }
       catch { database = 'unavailable'; }
     }
-    return send(res, 200, { ok: true, database, youtube: YOUTUBE_KEY ? 'configured' : 'not_configured', searchUsage: usage, noLogin: true });
+    return send(res, 200, { ok: true, database, youtube: YOUTUBE_KEY ? 'configured' : 'not_configured', auth: SUPABASE_URL && SUPABASE_AUTH_KEY ? 'configured' : 'not_configured', searchUsage: usage, noLogin: false });
   }
 
-  if (pathname === '/api/youtube/search' && method === 'POST') {
-    const body = await readJson(req);
-    const result = await youtubeSearch(body);
+  if (pathname === '/api/search/interpret' && method === 'POST') {
+    const body = await readJson(req, 4_000);
+    const result = interpretSearchQuery(body.query);
     return send(res, 200, result);
   }
 
+  if (pathname === '/api/youtube/search' && method === 'POST') {
+    const user = await currentUser(req, res);
+    if (!user) return safeError(res, 401, 'AUTH_REQUIRED', 'Sign in to start a channel search.');
+    const body = await readJson(req);
+    const userLimit = Number(user.search_limit_override) || USER_DAILY_SEARCH_LIMIT;
+    const userCalls = await reserveUserSearch(user.id, userLimit);
+    const record = { user_id: user.id, query: requireText(body.query, 'Search phrase', 120), filters: { regionCode: body.regionCode || null, minSubscribers: body.minSubscribers ?? null, maxSubscribers: body.maxSubscribers ?? null, includeUnknownSubscribers: body.includeUnknownSubscribers !== false, declaredCountries: body.declaredCountries || [], service: body.service || null, maxResults: body.maxResults || 20 }, status: 'running', started_at: new Date().toISOString() };
+    const created = await dbRequest('discovery_searches', { method: 'POST', body: record, prefer: 'return=representation' });
+    const searchId = created?.[0]?.id;
+    let result;
+    try { result = await youtubeSearch(body); }
+    catch (error) {
+      if (searchId) await dbRequest('discovery_searches', { method: 'PATCH', query: new URLSearchParams({ id: `eq.${searchId}`, user_id: `eq.${user.id}` }).toString(), body: { status: 'failed', error_code: error.code || 'SEARCH_FAILED', finished_at: new Date().toISOString(), updated_at: new Date().toISOString() } }).catch(() => {});
+      throw error;
+    }
+    if (searchId) await dbRequest('discovery_searches', { method: 'PATCH', query: new URLSearchParams({ id: `eq.${searchId}`, user_id: `eq.${user.id}` }).toString(), body: { status: 'completed', finished_at: new Date().toISOString(), updated_at: new Date().toISOString() } });
+    result.userUsage = { calls: userCalls, limit: userLimit };
+    return send(res, 200, result);
+  }
+
+  if (pathname === '/api/youtube/inspect' && method === 'POST') {
+    const user = await currentUser(req, res);
+    if (!user) return safeError(res, 401, 'AUTH_REQUIRED', 'Sign in to inspect recent public uploads.');
+    const body = await readJson(req, 4_000);
+    const analysisCalls = await reserveUserAnalysis(user.id);
+    const data = await youtubeChannelInspection(body);
+    data.usage = { analysesToday: analysisCalls, dailyLimit: USER_DAILY_ANALYSIS_LIMIT };
+    return send(res, 200, data);
+  }
+
+  if (pathname.startsWith('/api/admin/')) {
+    const admin = await requireAdmin(req, res);
+    if (!admin) return;
+    if (pathname === '/api/admin/overview' && method === 'GET') {
+      const [users, activeUsers, searches, completedSearches, errors, dailyUsage] = await Promise.all([
+        dbCount('app_users'), dbCount('app_users', 'status=eq.active'), dbCount('discovery_searches'), dbCount('discovery_searches', 'status=eq.completed'), dbCount('api_error_logs'),
+        dbRequest('youtube_api_usage', { query: new URLSearchParams({ select: 'search_calls', usage_date: `eq.${new Date().toISOString().slice(0, 10)}`, limit: '1' }).toString() }),
+      ]);
+      return send(res, 200, { users, activeUsers, searches, discoveredChannels: null, analyzedLeads: null, apiCallsToday: Number(dailyUsage?.[0]?.search_calls || 0), apiErrors: errors, searchSuccessRate: searches ? Math.round(completedSearches / searches * 100) : null, system: { database: 'connected', youtube: YOUTUBE_KEY ? 'configured' : 'not_configured', auth: 'configured', ai: process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY ? 'configured' : 'not_configured', billing: 'not_configured' } });
+    }
+    if (pathname === '/api/admin/users' && method === 'GET') {
+      const search = optionalText(url.searchParams.get('q'), 120);
+      const query = new URLSearchParams({ select: 'id,email,role,status,plan,search_limit_override,created_at', order: 'created_at.desc', limit: '200' });
+      if (search) { const needle = search.replace(/[^\w.@+-]/g, ''); if (needle) query.set('or', `(email.ilike.*${needle}*,id.eq.${needle})`); }
+      const [users, usageRows] = await Promise.all([
+        dbRequest('app_users', { query: query.toString() }),
+        dbRequest('user_daily_usage', { query: new URLSearchParams({ select: 'user_id,search_requests,analysis_requests', usage_date: `eq.${new Date().toISOString().slice(0, 10)}`, limit: '5000' }).toString() }),
+      ]);
+      const usage = new Map(usageRows.map(row => [row.user_id, row]));
+      return send(res, 200, users.map(user => ({ ...user, searches_today: usage.get(user.id)?.search_requests || 0, analyses_today: usage.get(user.id)?.analysis_requests || 0, default_search_limit: USER_DAILY_SEARCH_LIMIT, default_analysis_limit: USER_DAILY_ANALYSIS_LIMIT })));
+    }
+    if (pathname === '/api/admin/searches' && method === 'GET') {
+      return send(res, 200, await dbRequest('discovery_searches', { query: new URLSearchParams({ select: 'id,user_id,query,filters,status,error_code,created_at,started_at,finished_at', order: 'created_at.desc', limit: '300' }).toString() }));
+    }
+    if (pathname === '/api/admin/errors' && method === 'GET') {
+      return send(res, 200, await dbRequest('api_error_logs', { query: new URLSearchParams({ select: 'id,code,message,path,status,created_at', order: 'created_at.desc', limit: '200' }).toString() }));
+    }
+    if (pathname === '/api/admin/config' && method === 'GET') {
+      return send(res, 200, { youtube: { configured: Boolean(YOUTUBE_KEY), secret: 'stored in server environment' }, database: { configured: databaseConfigured() }, auth: { configured: Boolean(SUPABASE_AUTH_KEY) }, ai: { configured: Boolean(process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY), status: 'not used until an approved provider is selected' }, limits: { youtubeSearchCallsPerDay: SEARCH_LIMIT, userSearchesPerDay: USER_DAILY_SEARCH_LIMIT, userChannelInspectionsPerDay: USER_DAILY_ANALYSIS_LIMIT, apiRequestsPerMinute: RATE_LIMIT }, subscriptions: { configured: false } });
+    }
+    const userMatch = pathname.match(/^\/api\/admin\/users\/([0-9a-f-]{36})$/i);
+    if (userMatch && method === 'PATCH') {
+      const body = await readJson(req);
+      const changes = {};
+      if (body.role !== undefined) { if (!['member','admin'].includes(body.role)) throw Object.assign(new Error('Choose a valid account role.'), { status: 400, code: 'INVALID_ROLE' }); changes.role = body.role; }
+      if (body.status !== undefined) { if (!['active','suspended'].includes(body.status)) throw Object.assign(new Error('Choose a valid account status.'), { status: 400, code: 'INVALID_STATUS' }); changes.status = body.status; }
+      if (body.plan !== undefined) { if (!['free','starter','pro','agency'].includes(body.plan)) throw Object.assign(new Error('Choose a valid plan.'), { status: 400, code: 'INVALID_PLAN' }); changes.plan = body.plan; }
+      if (body.search_limit_override !== undefined) {
+        if (body.search_limit_override !== null && (!Number.isSafeInteger(body.search_limit_override) || body.search_limit_override < 1 || body.search_limit_override > 1000)) throw Object.assign(new Error('Set the account search limit from 1 to 1,000 per day, or clear the override.'), { status: 400, code: 'INVALID_USAGE_LIMIT' });
+        changes.search_limit_override = body.search_limit_override;
+      }
+      if (!Object.keys(changes).length) throw Object.assign(new Error('Choose an account setting to update.'), { status: 400, code: 'NO_CHANGES' });
+      if (userMatch[1] === admin.id && (changes.role === 'member' || changes.status === 'suspended')) throw Object.assign(new Error('You cannot remove your own admin access or pause your account.'), { status: 400, code: 'SELF_ADMIN_CHANGE' });
+      if (changes.role === 'member' || changes.status === 'suspended') {
+        const targetRows = await dbRequest('app_users', { query: new URLSearchParams({ select: 'role,status', id: `eq.${userMatch[1]}`, limit: '1' }).toString() });
+        if (targetRows?.[0]?.role === 'admin' && targetRows[0].status === 'active') {
+          const admins = await dbRequest('app_users', { query: new URLSearchParams({ select: 'id', role: 'eq.admin', status: 'eq.active', limit: '2' }).toString() });
+          if (admins.length <= 1) throw Object.assign(new Error('Keep at least one active administrator.'), { status: 400, code: 'LAST_ADMIN' });
+        }
+      }
+      changes.updated_at = new Date().toISOString();
+      const updated = await dbRequest('app_users', { method: 'PATCH', query: new URLSearchParams({ id: `eq.${userMatch[1]}`, select: 'id,email,role,status,plan,search_limit_override,created_at' }).toString(), body: changes, prefer: 'return=representation' });
+      if (!updated?.length) return safeError(res, 404, 'NOT_FOUND', 'That account could not be found.');
+      await adminAudit(admin.id, 'user.updated', userMatch[1], changes);
+      return send(res, 200, updated[0]);
+    }
+    return safeError(res, 404, 'NOT_FOUND', 'This admin route does not exist.');
+  }
+
+  const actor = await currentUser(req, res);
+  if (!actor) return safeError(res, 401, 'AUTH_REQUIRED', 'Sign in to access your workspace.');
+
+  if (pathname === '/api/searches' && method === 'GET') {
+    const rows = await dbRequest('discovery_searches', { query: new URLSearchParams({ select: 'id,query,filters,status,error_code,created_at,started_at,finished_at', user_id: `eq.${actor.id}`, order: 'created_at.desc', limit: '200' }).toString() });
+    return send(res, 200, rows);
+  }
+
   if (pathname === '/api/prospects' && method === 'GET') {
-    const rows = await dbRequest('external_prospects', { query: new URLSearchParams({ select: '*', order: 'updated_at.desc', limit: '250' }).toString() });
+    const rows = await dbRequest('external_prospects', { query: new URLSearchParams({ select: '*', user_id: `eq.${actor.id}`, order: 'updated_at.desc', limit: '250' }).toString() });
     return send(res, 200, rows);
   }
   if (pathname === '/api/prospects' && method === 'POST') {
     const body = await readJson(req);
     const row = prospectInput(body);
+    row.user_id = actor.id;
     const rows = await dbRequest('external_prospects', { method: 'POST', body: row, prefer: 'return=representation' });
     return send(res, 201, rows?.[0] || null);
   }
@@ -301,24 +565,28 @@ async function handleApi(req, res, url) {
     const body = await readJson(req);
     const changes = prospectInput(body, true);
     changes.updated_at = new Date().toISOString();
-    const query = new URLSearchParams({ id: `eq.${prospectMatch[1]}`, select: '*' }).toString();
+    const query = new URLSearchParams({ id: `eq.${prospectMatch[1]}`, user_id: `eq.${actor.id}`, select: '*' }).toString();
     const rows = await dbRequest('external_prospects', { method: 'PATCH', query, body: changes, prefer: 'return=representation' });
     return rows?.length ? send(res, 200, rows[0]) : safeError(res, 404, 'NOT_FOUND', 'This prospect could not be found.');
   }
   if (prospectMatch && method === 'DELETE') {
-    await dbRequest('external_prospects', { method: 'DELETE', query: new URLSearchParams({ id: `eq.${prospectMatch[1]}` }).toString() });
+    await dbRequest('external_prospects', { method: 'DELETE', query: new URLSearchParams({ id: `eq.${prospectMatch[1]}`, user_id: `eq.${actor.id}` }).toString() });
     return send(res, 200, { deleted: true });
   }
 
   if (pathname === '/api/tasks' && method === 'GET') {
-    const rows = await dbRequest('crm_tasks', { query: new URLSearchParams({ select: '*,external_prospects(business_name)', order: 'due_at.asc.nullslast,created_at.desc', limit: '500' }).toString() });
+    const rows = await dbRequest('crm_tasks', { query: new URLSearchParams({ select: '*,external_prospects(business_name)', user_id: `eq.${actor.id}`, order: 'due_at.asc.nullslast,created_at.desc', limit: '500' }).toString() });
     return send(res, 200, rows);
   }
   if (pathname === '/api/tasks' && method === 'POST') {
     const body = await readJson(req);
     const title = requireText(body.title, 'Reminder', 240);
-    const row = { title, prospect_id: optionalText(body.prospect_id, 36), due_at: optionalText(body.due_at, 10), done: false };
+    const row = { title, prospect_id: optionalText(body.prospect_id, 36), due_at: optionalText(body.due_at, 10), done: false, user_id: actor.id };
     if (row.prospect_id && !/^[0-9a-f-]{36}$/i.test(row.prospect_id)) throw Object.assign(new Error('Choose a valid business.'), { status: 400, code: 'INVALID_ID' });
+    if (row.prospect_id) {
+      const owned = await dbRequest('external_prospects', { query: new URLSearchParams({ select: 'id', id: `eq.${row.prospect_id}`, user_id: `eq.${actor.id}`, limit: '1' }).toString() });
+      if (!owned?.length) throw Object.assign(new Error('Choose one of your own businesses.'), { status: 400, code: 'INVALID_PROSPECT' });
+    }
     const rows = await dbRequest('crm_tasks', { method: 'POST', body: row, prefer: 'return=representation' });
     return send(res, 201, rows?.[0] || null);
   }
@@ -330,29 +598,31 @@ async function handleApi(req, res, url) {
     if (body.done !== undefined) changes.done = Boolean(body.done);
     if (body.due_at !== undefined) changes.due_at = optionalText(body.due_at, 10);
     changes.updated_at = new Date().toISOString();
-    const rows = await dbRequest('crm_tasks', { method: 'PATCH', query: new URLSearchParams({ id: `eq.${taskMatch[1]}`, select: '*' }).toString(), body: changes, prefer: 'return=representation' });
+    const rows = await dbRequest('crm_tasks', { method: 'PATCH', query: new URLSearchParams({ id: `eq.${taskMatch[1]}`, user_id: `eq.${actor.id}`, select: '*' }).toString(), body: changes, prefer: 'return=representation' });
     return rows?.length ? send(res, 200, rows[0]) : safeError(res, 404, 'NOT_FOUND', 'This reminder could not be found.');
   }
   if (taskMatch && method === 'DELETE') {
-    await dbRequest('crm_tasks', { method: 'DELETE', query: new URLSearchParams({ id: `eq.${taskMatch[1]}` }).toString() });
+    await dbRequest('crm_tasks', { method: 'DELETE', query: new URLSearchParams({ id: `eq.${taskMatch[1]}`, user_id: `eq.${actor.id}` }).toString() });
     return send(res, 200, { deleted: true });
   }
 
   if (pathname === '/api/search-presets' && method === 'GET') {
-    const rows = await dbRequest('youtube_search_presets', { query: new URLSearchParams({ select: '*', order: 'created_at.desc', limit: '100' }).toString() });
+    const rows = await dbRequest('youtube_search_presets', { query: new URLSearchParams({ select: '*', user_id: `eq.${actor.id}`, order: 'created_at.desc', limit: '100' }).toString() });
     return send(res, 200, rows);
   }
   if (pathname === '/api/search-presets' && method === 'POST') {
     const body = await readJson(req);
     const row = {
+      user_id: actor.id,
       name: requireText(body.name, 'Search name', 120),
       query: requireText(body.query, 'Search phrase', 200),
+      filters: savedSearchFilters(body.filters),
       region_code: optionalText(body.region_code, 2)?.toUpperCase() || 'US',
       declared_country_code: optionalText(body.declared_country_code, 2)?.toUpperCase() || null,
       country_unknown_only: body.country_unknown_only === true,
       topic: optionalText(body.topic, 100),
       include_unknown: body.include_unknown !== false,
-      exclude_declared_india: body.exclude_declared_india !== false,
+      exclude_declared_india: body.exclude_declared_india === true,
     };
     if (!/^[A-Z]{2}$/.test(row.region_code) || (row.declared_country_code && !/^[A-Z]{2}$/.test(row.declared_country_code))) throw Object.assign(new Error('Choose a valid country.'), { status: 400, code: 'INVALID_REGION' });
     const rows = await dbRequest('youtube_search_presets', { method: 'POST', body: row, prefer: 'return=representation' });
@@ -360,7 +630,7 @@ async function handleApi(req, res, url) {
   }
   const presetMatch = pathname.match(/^\/api\/search-presets\/([0-9a-f-]{36})$/i);
   if (presetMatch && method === 'DELETE') {
-    await dbRequest('youtube_search_presets', { method: 'DELETE', query: new URLSearchParams({ id: `eq.${presetMatch[1]}` }).toString() });
+    await dbRequest('youtube_search_presets', { method: 'DELETE', query: new URLSearchParams({ id: `eq.${presetMatch[1]}`, user_id: `eq.${actor.id}` }).toString() });
     return send(res, 200, { deleted: true });
   }
 
@@ -381,7 +651,7 @@ async function handle(req, res) {
     let bytes;
     try { bytes = await readFile(filePath); }
     catch { return safeError(res, 404, 'NOT_FOUND', 'This page was not found.'); }
-    const type = requested.endsWith('.html') ? 'text/html; charset=utf-8' : requested.endsWith('.css') ? 'text/css; charset=utf-8' : 'application/octet-stream';
+    const type = requested.endsWith('.html') ? 'text/html; charset=utf-8' : requested.endsWith('.css') ? 'text/css; charset=utf-8' : requested.endsWith('.js') || requested.endsWith('.mjs') ? 'text/javascript; charset=utf-8' : 'application/octet-stream';
     res.writeHead(200, { ...securityHeaders, 'Content-Type': type, 'Cache-Control': 'no-store', 'Content-Length': bytes.length });
     if (req.method === 'HEAD') return res.end();
     return res.end(bytes);
@@ -389,7 +659,10 @@ async function handle(req, res) {
     const status = Number(error?.status) || 500;
     const code = error?.code || 'SERVER_ERROR';
     const message = status >= 500 && code === 'DATABASE_ERROR' ? 'The database is not responding. Check the Supabase setup and try again.' : (error?.message || 'Something went wrong. Try again.');
-    if (status >= 500) console.error(`[api] ${code}: ${message}`);
+    if (status >= 500) {
+      console.error(`[api] ${code}: ${message}`);
+      if (url?.pathname.startsWith('/api/') && databaseConfigured()) await dbRequest('api_error_logs', { method: 'POST', body: { code: String(code).slice(0, 100), message: String(message).slice(0, 1000), path: url.pathname.slice(0, 200), status }, prefer: 'return=minimal' }).catch(() => {});
+    }
     if (!res.headersSent) return safeError(res, status, code, message);
     return res.end();
   }

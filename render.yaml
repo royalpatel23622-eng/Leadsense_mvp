@@ -3,7 +3,7 @@ services:
     name: leadsense-mvp
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm test
     startCommand: npm start
     healthCheckPath: /api/health
     envVars:
@@ -23,3 +23,7 @@ services:
         value: 40
       - key: API_RATE_LIMIT_PER_MINUTE
         value: 60
+      - key: USER_DAILY_SEARCH_LIMIT
+        value: 10
+      - key: USER_DAILY_ANALYSIS_LIMIT
+        value: 20
