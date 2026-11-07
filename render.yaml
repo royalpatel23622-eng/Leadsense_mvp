@@ -5,6 +5,7 @@ services:
     plan: free
     buildCommand: npm test
     startCommand: npm start
+    autoDeploy: false
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
