@@ -270,50 +270,104 @@ async function youtubeSearch(body) {
   if (!YOUTUBE_KEY) throw Object.assign(new Error('Live YouTube search is not set up yet. Add YOUTUBE_API_KEY on the server, then restart the app.'), { status: 503, code: 'YOUTUBE_NOT_CONFIGURED' });
   const query = requireText(body.query, 'Search phrase', 120);
   const maxResults = Math.max(1, Math.min(50, Number(body.maxResults) || 20));
+  const targetMatches = 5;
+  const maxSearchPages = 5;
   const { min: minSubscribers, max: maxSubscribers } = normalizeSubscriberRange(body.minSubscribers, body.maxSubscribers);
   const regionCode = optionalText(body.regionCode, 2)?.toUpperCase();
   if (regionCode && !/^[A-Z]{2}$/.test(regionCode)) throw Object.assign(new Error('Choose a valid two-letter country code.'), { status: 400, code: 'INVALID_REGION' });
   const relevanceLanguage = optionalText(body.language, 2)?.toLowerCase();
   if (relevanceLanguage && !/^[a-z]{2}$/.test(relevanceLanguage)) throw Object.assign(new Error('Choose a valid two-letter language code.'), { status: 400, code: 'INVALID_LANGUAGE' });
-  const pageToken = optionalText(body.pageToken, 300);
-
-  const usage = await reserveSearchCall();
-  const search = await googleGet('search', {
-    key: YOUTUBE_KEY, part: 'snippet', type: 'channel', q: query, maxResults,
-    regionCode, relevanceLanguage, pageToken,
-    fields: 'nextPageToken,items(id(channelId),snippet(title,description,channelId))',
-  });
-  const ids = dedupeChannelsById((search.items || []).map(item => ({ channelId: item.id?.channelId || item.snippet?.channelId })).filter(item => item.channelId)).map(item => item.channelId);
-  if (ids.length === 0) return { items: [], nextPageToken: search.nextPageToken || null, usage: { calls: usage, limit: SEARCH_LIMIT, source: 'this app only' } };
-
-  const details = await googleGet('channels', {
-    key: YOUTUBE_KEY, part: 'snippet,statistics', id: ids.join(','),
-    fields: 'items(id,snippet(title,description,customUrl,country,publishedAt,thumbnails(default,medium,high)),statistics(subscriberCount,viewCount,videoCount))',
-  });
-  const detailsById = new Map((details.items || []).map(channel => [channel.id, channel]));
-  const items = ids.map(id => detailsById.get(id)).filter(Boolean).map(channel => ({
-    channelId: channel.id,
-    name: channel.snippet?.title || 'Untitled channel',
-    description: channel.snippet?.description || '',
-    customUrl: channel.snippet?.customUrl || null,
-    countryCode: channel.snippet?.country || null,
-    publishedAt: channel.snippet?.publishedAt || null,
-    thumbnail: channel.snippet?.thumbnails?.medium?.url || channel.snippet?.thumbnails?.default?.url || null,
-    subscribers: channel.statistics?.subscriberCount ?? null,
-    totalViews: channel.statistics?.viewCount ?? null,
-    videoCount: channel.statistics?.videoCount ?? null,
-    channelUrl: `https://www.youtube.com/channel/${encodeURIComponent(channel.id)}`,
-    fetchedAt: new Date().toISOString(),
-    source: 'YouTube Data API',
-  }));
+  let pageToken = optionalText(body.pageToken, 300);
   const declaredCountries = Array.isArray(body.declaredCountries) ? body.declaredCountries.slice(0, 20) : [];
   if (declaredCountries.some(code => typeof code !== 'string' || !/^[A-Z]{2}$/.test(code))) throw Object.assign(new Error('Use two-letter country codes for creator-country filters.'), { status: 400, code: 'INVALID_COUNTRY_FILTER' });
   const includeUnknown = body.includeUnknown !== false;
   const unknownCountryOnly = body.unknownCountryOnly === true;
   const excludeIndia = body.excludeIndia === true;
-  const countryFiltered = filterByDeclaredCountry(items.filter(item => !(excludeIndia && item.countryCode === 'IN')), declaredCountries, includeUnknown, unknownCountryOnly);
-  const subscriberFiltered = filterByPublicSubscribers(countryFiltered, { min: minSubscribers, max: maxSubscribers }, body.includeUnknownSubscribers !== false);
-  return { items: subscriberFiltered, nextPageToken: search.nextPageToken || null, filtersApplied: { query, minSubscribers, maxSubscribers, declaredCountries, unknownCountryOnly, excludeIndia }, usage: { calls: usage, limit: SEARCH_LIMIT, source: 'this app only' } };
+  const foundById = new Map();
+  let lastApiUsage = { calls: 0, limit: SEARCH_LIMIT, source: 'unavailable' };
+  let pagesChecked = 0;
+  let searchWarning = null;
+
+  while (pagesChecked < maxSearchPages) {
+    let pageUsage;
+    try {
+      pageUsage = await reserveSearchCall();
+    } catch (error) {
+      if (!foundById.size) throw error;
+      searchWarning = 'Daily search limit reached before five matches were found.';
+      break;
+    }
+    lastApiUsage = { calls: pageUsage, limit: SEARCH_LIMIT, source: 'this app only' };
+    pagesChecked += 1;
+
+    let search;
+    try {
+      search = await googleGet('search', {
+        key: YOUTUBE_KEY, part: 'snippet', type: 'channel', q: query, maxResults,
+        regionCode, relevanceLanguage, pageToken,
+        fields: 'nextPageToken,items(id(channelId),snippet(title,description,channelId))',
+      });
+    } catch (error) {
+      if (!foundById.size) throw error;
+      searchWarning = error.message || 'YouTube stopped returning more results.';
+      break;
+    }
+    const nextPageToken = search.nextPageToken || null;
+    const ids = dedupeChannelsById((search.items || []).map(item => ({ channelId: item.id?.channelId || item.snippet?.channelId })).filter(item => item.channelId)).map(item => item.channelId);
+    let items = [];
+    if (ids.length) {
+      let details;
+      try {
+        details = await googleGet('channels', {
+          key: YOUTUBE_KEY, part: 'snippet,statistics', id: ids.join(','),
+          fields: 'items(id,snippet(title,description,customUrl,country,publishedAt,thumbnails(default,medium,high)),statistics(subscriberCount,viewCount,videoCount))',
+        });
+      } catch (error) {
+        if (!foundById.size) throw error;
+        searchWarning = error.message || 'YouTube could not load more channel details.';
+        break;
+      }
+      const detailsById = new Map((details.items || []).map(channel => [channel.id, channel]));
+      items = ids.map(id => detailsById.get(id)).filter(Boolean).map(channel => ({
+        channelId: channel.id,
+        name: channel.snippet?.title || 'Untitled channel',
+        description: channel.snippet?.description || '',
+        customUrl: channel.snippet?.customUrl || null,
+        countryCode: channel.snippet?.country || null,
+        publishedAt: channel.snippet?.publishedAt || null,
+        thumbnail: channel.snippet?.thumbnails?.medium?.url || channel.snippet?.thumbnails?.default?.url || null,
+        subscribers: channel.statistics?.subscriberCount ?? null,
+        totalViews: channel.statistics?.viewCount ?? null,
+        videoCount: channel.statistics?.videoCount ?? null,
+        channelUrl: `https://www.youtube.com/channel/${encodeURIComponent(channel.id)}`,
+        fetchedAt: new Date().toISOString(),
+        source: 'YouTube Data API',
+      }));
+    }
+    const countryFiltered = filterByDeclaredCountry(items.filter(item => !(excludeIndia && item.countryCode === 'IN')), declaredCountries, includeUnknown, unknownCountryOnly);
+    const subscriberFiltered = filterByPublicSubscribers(countryFiltered, { min: minSubscribers, max: maxSubscribers }, body.includeUnknownSubscribers !== false);
+    for (const item of subscriberFiltered) foundById.set(item.channelId, item);
+
+    pageToken = nextPageToken;
+    if (foundById.size >= targetMatches || !pageToken) break;
+  }
+
+  const hasMore = Boolean(pageToken);
+  if (!searchWarning && foundById.size < targetMatches && hasMore && pagesChecked >= maxSearchPages) {
+    searchWarning = `Found ${foundById.size} matching channel${foundById.size === 1 ? '' : 's'} after checking ${pagesChecked * maxResults} candidates. Use Load more to continue.`;
+  } else if (!searchWarning && foundById.size < targetMatches && !hasMore) {
+    searchWarning = `YouTube had no more results for these filters. Found ${foundById.size} matching channel${foundById.size === 1 ? '' : 's'}; try a broader search to find more.`;
+  }
+
+  return {
+    items: [...foundById.values()],
+    nextPageToken: pageToken,
+    searchPages: pagesChecked,
+    targetMatches,
+    searchWarning,
+    filtersApplied: { query, minSubscribers, maxSubscribers, declaredCountries, unknownCountryOnly, excludeIndia },
+    usage: lastApiUsage,
+  };
 }
 
 async function youtubeChannelInspection(body) {

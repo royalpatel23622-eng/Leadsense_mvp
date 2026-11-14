@@ -6,7 +6,7 @@ The backend is a dependency-free Node.js web server. It serves the existing fron
 
 ## What works
 
-- **YouTube discovery:** search by topic, select a creator-declared country and subscriber range, and see up to 50 public channel matches per page. Each result explains which search phrase, country, and subscriber range matched. Load another page when you want to check more candidates.
+- **YouTube discovery:** search by topic, select a creator-declared country and subscriber range, and search across up to 250 candidate channels per request to find at least five matches when available. Each result explains which search phrase, country, and subscriber range matched. Load more continues from the next unsearched YouTube page. Narrow filters, exhausted results, or daily API limits can still mean fewer than five matches; LeadSense never invents channels or silently changes your filters.
 - **Recent upload inspection:** load a channel’s current public details and up to 10 recent uploads when requested. Review public thumbnails and editing yourself; private audience-retention data is not available in public channel search.
 - **Search filter draft:** paste a natural-language description and review a rule-based draft for service, search words, countries, subscriber range, and result count. The parser is not an AI model. Each field is editable before searching.
 - **Account access:** Supabase Auth handles sign-up and sign-in. Session tokens use secure, HTTP-only cookies. CRM records and saved search settings are scoped to the signed-in user on the server.

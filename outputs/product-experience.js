@@ -113,7 +113,7 @@
     if (activeSearch) activeSearch.abort();
     activeSearch = new AbortController();
     button.disabled = true; button.textContent = 'Searching…';
-    progress.innerHTML = `<div class="search-running"><span><i class="pulse-dot"></i> Searching YouTube for “${escHtml(query)}” …</span><span>Checking up to 50 channels</span></div><div class="lead-loading"><i></i></div>`;
+    progress.innerHTML = `<div class="search-running"><span><i class="pulse-dot"></i> Searching YouTube for “${escHtml(query)}” …</span><span>Looking for 5 matches, across up to 250 channels</span></div><div class="lead-loading"><i></i></div>`;
     try {
       const data = await apiRequest('/api/youtube/search', { method: 'POST', body: JSON.stringify(payload), signal: activeSearch.signal });
       liveDiscovery = true;
@@ -133,11 +133,12 @@
       if (resultCount) resultCount.textContent = `${channels.length} matching channel${channels.length === 1 ? '' : 's'}`;
       const subtitle = $('#resultsSub');
       if (subtitle) subtitle.textContent = `Public channel results for “${query}”. Review the match reasons on each card.`;
-      progress.innerHTML = `<div class="search-done">${mapped.length ? `${mapped.length} matches on this page.` : 'No channels matched these filters on this page.'}${searchUsage ? ` App searches today: ${searchUsage.calls}/${searchUsage.limit}.` : ''}</div>`;
+      const searchStatus = data.searchWarning || (channels.length >= 5 ? `Found ${channels.length} matching channels.` : `Found ${channels.length} matching channel${channels.length === 1 ? '' : 's'}.`);
+      progress.innerHTML = `<div class="search-done">${escHtml(searchStatus)}${searchUsage ? ` YouTube search calls used today: ${searchUsage.calls}/${searchUsage.limit}.` : ''}</div>`;
       const empty = $('#noResults');
       if (empty) {
         empty.hidden = channels.length > 0;
-        if (!channels.length) empty.innerHTML = `<b>No channels matched those filters on this page.</b><p>Try a broader subscriber range, include channels with unknown details, or search another phrase. YouTube checks up to 50 candidates per page; use Load more to check the next page.</p>`;
+        if (!channels.length) empty.innerHTML = `<b>No channels matched those filters yet.</b><p>${escHtml(data.searchWarning || 'Try a broader subscriber range, include channels with unknown details, or search another phrase.')}</p>`;
         else empty.innerHTML = '';
       }
       const more = $('#loadMoreRoot');
