@@ -21,7 +21,7 @@
     .lead-range{display:grid;grid-template-columns:1fr 1fr;gap:7px}.lead-checks{display:flex;gap:18px;flex-wrap:wrap;align-items:center}.lead-check{display:flex;align-items:center;gap:7px;font-size:11px;color:#6e6d75}.lead-check input{accent-color:#416cf6;width:15px;height:15px}
     .lead-search-note,.lead-policy-note{font-size:10px;line-height:1.6;color:#828189;margin:0}.lead-search-note{padding:10px 12px;background:#f8f7f5;border-radius:11px}
     .lead-results{display:grid;gap:12px}.lead-result{animation:card-arrive .4s cubic-bezier(.2,.7,.2,1) both}.lead-result:nth-child(2){animation-delay:.04s}.lead-result:nth-child(3){animation-delay:.08s}.lead-result:nth-child(4){animation-delay:.12s}
-    .lead-result-top{display:flex;gap:11px;align-items:center}.lead-channel-avatar{width:48px;height:48px;flex:none;border-radius:50%;object-fit:cover;background:#edf0ff}.lead-result-title{min-width:0;flex:1}.lead-result-title h3{font-size:14px;margin:0 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lead-result-title a{color:#62616a;font-size:10px}.lead-fit{font-size:9px;padding:6px 8px;border-radius:20px;background:#e8f7ee;color:#27895d;white-space:nowrap}
+    .lead-result-top{display:flex;gap:11px;align-items:center}.lead-channel-avatar{width:48px;height:48px;flex:none;border-radius:50%;object-fit:cover;background:#edf0ff}.lead-result-title{min-width:0;flex:1}.lead-result-title h3{font-size:14px;margin:0 0 4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lead-result-title a{color:#62616a;font-size:10px}.lead-fit{font-size:9px;padding:6px 8px;border-radius:20px;background:#e8f7ee;color:#27895d;white-space:nowrap}.lead-related .lead-fit{background:#fff3de;color:#a36913}.lead-topic-tags{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin:0 0 10px}.lead-topic-tags small{font-size:9px;color:#8a8990}.lead-topic-tags span{font-size:9px;padding:4px 7px;background:#f2efff;color:#7254bd;border-radius:99px}
     .lead-result-desc{font-size:11px;line-height:1.55;color:#696870;margin:12px 0}.lead-reasons{display:grid;gap:6px;padding:10px 11px;background:#f8f8fb;border-radius:11px}.lead-reasons strong{font-size:10px}.lead-reasons span{font-size:10px;color:#696870;line-height:1.45}.lead-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:11px 0}.lead-stat{padding:9px;border:1px solid #f0efed;border-radius:10px}.lead-stat small{display:block;font-size:9px;color:#85848c;margin-bottom:5px}.lead-stat b{font-size:11px}.lead-card-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px}.lead-card-actions>div{display:flex;gap:7px;flex-wrap:wrap}.lead-card-actions .soft-btn{padding:8px 10px}.lead-manual-review{display:grid;gap:8px;padding:12px;border-radius:13px;background:linear-gradient(135deg,#fff8ee,#f7f4ff);margin-top:10px}.lead-manual-review b{font-size:11px}.lead-manual-review p{font-size:10px;line-height:1.55;color:#74737c;margin:0}
     .lead-loading{height:4px;border-radius:8px;overflow:hidden;background:#efedf4;margin-top:10px}.lead-loading i{display:block;width:35%;height:100%;background:linear-gradient(90deg,#416cf6,#9770ef,#ff7b43,#47bb86);animation:lead-scan 1.1s ease-in-out infinite alternate}@keyframes lead-scan{to{transform:translateX(185%)}}
     .lead-empty{padding:28px 18px;background:#fff;border:1px dashed #dfdce5;border-radius:16px;text-align:center}.lead-empty b{display:block;font-size:13px}.lead-empty p{max-width:510px;margin:7px auto 0;font-size:11px;line-height:1.6;color:#7e7d84}
@@ -51,10 +51,10 @@
         <div class="search-suggestions"><span class="hint">Try one of these</span><button class="tag" data-query="gaming tutorials">Gaming tutorials</button><button class="tag" data-query="business podcast">Business podcasts</button><button class="tag" data-query="design tutorials">Design tutorials</button><button class="tag" data-query="technology explainers">Tech explainers</button></div>
         <div id="searchProgress" aria-live="polite"></div>
       </div>
-      <div class="results-heading"><div><h2>Matching channels</h2><p id="resultsSub">Choose your filters, then search YouTube.</p><a class="lead-youtube-source" href="https://www.youtube.com/" target="_blank" rel="noopener noreferrer" aria-label="Channel details are from YouTube"><span>Source</span><img src="https://developers.google.com/youtube/images/YouTube_logo_standard_white.png" alt="YouTube"></a></div><span class="result-count-pill" id="resultCount">No search yet</span></div>
+      <div class="results-heading"><div><h2>Channels to review</h2><p id="resultsSub">Choose your filters, then search YouTube.</p><a class="lead-youtube-source" href="https://www.youtube.com/" target="_blank" rel="noopener noreferrer" aria-label="Channel details are from YouTube"><span>Source</span><img src="https://developers.google.com/youtube/images/YouTube_logo_standard_white.png" alt="YouTube"></a></div><span class="result-count-pill" id="resultCount">No search yet</span></div>
       <div class="creator-grid lead-results" id="creatorGrid">${activeChannels.map(channelCard).join('')}</div><div class="empty" id="noResults" hidden></div><div id="loadMoreRoot"></div>
       <div class="lead-manual-review"><b>What LeadSense can and can’t tell you</b><p>We explain why a channel matches your filters. You can inspect recent public uploads and review the thumbnails and editing yourself. Retention data is private to the channel owner, so we cannot flag low retention or claim a creator has poor quality. Reach out through contact options the creator has made public on their channel.</p></div>
-      <p class="lead-policy-note">YouTube is the source of channel details. LeadSense shows public subscriber counts and declared country without estimating creator needs or collecting email addresses. Results are refreshed when you search.</p>
+      <p class="lead-policy-note">YouTube is the source of channel details. LeadSense shows public subscriber counts and declared country without estimating creator needs or collecting email addresses. Results are refreshed when you search. By using these YouTube-powered features, you agree to the <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer">YouTube Terms of Service</a>.</p>
     </section>`;
   };
 
@@ -63,17 +63,19 @@
     const low = $('#minSubscriberFilter')?.value;
     const high = $('#maxSubscriberFilter')?.value;
     const range = low || high ? `${low ? number(low) : '0'}–${high ? number(high) : 'no maximum'}` : 'No subscriber range selected';
-    const reasons = [
+    const reasons = c.isRelated ? [`YouTube returned this for “${escHtml(lastSearchPayload?.query || '')}”.`, ...(c.relatedReasons || ['This channel missed one or more selected filters.'])] : [
       `YouTube returned this channel for “${escHtml(lastSearchPayload?.query || '')}”.`,
       c.countryCode ? `The channel lists ${escHtml(country)} as its country.` : 'The creator has not listed a country on the channel.',
       c.subs == null ? 'The subscriber count is hidden or unavailable.' : `${number(c.subs)} public subscribers; selected range: ${range}.`,
     ];
+    const topicLabels = (c.topicCategories || []).slice(0, 3).map(url => { try { return decodeURIComponent(new URL(url).pathname.split('/').filter(Boolean).pop() || '').replaceAll('_', ' '); } catch { return ''; } }).filter(Boolean);
     const openUrl = c.channelUrl || `https://www.youtube.com/channel/${encodeURIComponent(c.channelId || '')}`;
     const thumb = c.thumbnail ? `<img class="lead-channel-avatar" src="${escHtml(c.thumbnail)}" alt="" loading="lazy">` : `<span class="lead-channel-avatar creator-avatar">${escHtml(c.initials || '?')}</span>`;
-    return `<article class="creator lead-result"><div class="lead-result-top">${thumb}<div class="lead-result-title"><h3>${escHtml(c.name)}</h3><a href="${escHtml(openUrl)}" target="_blank" rel="noopener noreferrer">${escHtml(c.customUrl ? `@${c.customUrl.replace(/^@/, '')}` : 'Open YouTube channel')} ↗</a></div><span class="lead-fit">Matches filters</span></div>
+    return `<article class="creator lead-result ${c.isRelated ? 'lead-related' : ''}"><div class="lead-result-top">${thumb}<div class="lead-result-title"><h3>${escHtml(c.name)}</h3><a href="${escHtml(openUrl)}" target="_blank" rel="noopener noreferrer">${escHtml(c.customUrl ? `@${c.customUrl.replace(/^@/, '')}` : 'Open YouTube channel')} ↗</a></div><span class="lead-fit">${c.isRelated ? 'Related topic' : 'Matches filters'}</span></div>
       <p class="lead-result-desc">${escHtml(c.desc || 'This channel has no public description.')}</p>
       <div class="lead-stats"><div class="lead-stat"><small>Subscribers</small><b>${c.subs == null ? 'Not public' : number(c.subs)}</b></div><div class="lead-stat"><small>Country</small><b>${escHtml(country)}</b></div><div class="lead-stat"><small>Public videos</small><b>${number(c.videos)}</b></div></div>
-      <div class="lead-reasons"><strong>Why it showed up</strong>${reasons.map(reason => `<span>• ${reason}</span>`).join('')}</div>
+      ${topicLabels.length ? `<div class="lead-topic-tags"><small>YouTube topic tags</small>${topicLabels.map(label => `<span>${escHtml(label)}</span>`).join('')}</div>` : ''}
+      <div class="lead-reasons"><strong>Why it showed up</strong>${reasons.map(reason => `<span>• ${escHtml(reason)}</span>`).join('')}</div>
       <div class="lead-card-actions"><small>${escHtml(c.fresh || 'Fetched just now')} · Public YouTube data</small><div><button class="soft-btn" type="button" data-inspect-channel="${escHtml(c.channelId)}">Review recent uploads</button><a class="soft-btn" href="${escHtml(openUrl)}" target="_blank" rel="noopener noreferrer">Check public contact links ↗</a></div></div>
       <p class="lead-reach-note">Contact details are not collected by LeadSense. Check the links the creator shares on YouTube.</p></article>`;
   };
@@ -113,32 +115,38 @@
     if (activeSearch) activeSearch.abort();
     activeSearch = new AbortController();
     button.disabled = true; button.textContent = 'Searching…';
-    progress.innerHTML = `<div class="search-running"><span><i class="pulse-dot"></i> Searching YouTube for “${escHtml(query)}” …</span><span>Looking for 5 matches, across up to 250 channels</span></div><div class="lead-loading"><i></i></div>`;
+    progress.innerHTML = `<div class="search-running"><span><i class="pulse-dot"></i> Searching YouTube for “${escHtml(query)}” …</span><span>Checking a page of up to 50 channels</span></div><div class="lead-loading"><i></i></div>`;
     try {
       const data = await apiRequest('/api/youtube/search', { method: 'POST', body: JSON.stringify(payload), signal: activeSearch.signal });
       liveDiscovery = true;
       nextPageToken = data.nextPageToken || null;
       searchUsage = data.usage || null;
-      const mapped = (data.items || []).map(channel => ({
+      const mapChannel = (channel, isRelated = false) => ({
         channelId: channel.channelId, name: channel.name, desc: channel.description, customUrl: channel.customUrl,
         channelUrl: channel.channelUrl, countryCode: channel.countryCode, thumbnail: channel.thumbnail,
         subs: channel.subscribers == null ? null : Number(channel.subscribers), views: channel.totalViews, videos: channel.videoCount,
-        fresh: 'Fetched just now', initials: channel.name.split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase(),
-      }));
+        topicCategories: channel.topicCategories || [],
+        fresh: 'Fetched just now', isRelated, relatedReasons: channel.relatedReasons || [], initials: channel.name.split(/\s+/).map(part => part[0]).join('').slice(0, 2).toUpperCase(),
+      });
+      const exact = (data.items || []).map(channel => mapChannel(channel));
+      const related = (data.relatedItems || []).map(channel => mapChannel(channel, true));
+      const mapped = [...exact, ...related];
       const combined = append ? [...channels, ...mapped] : mapped;
       const seen = new Set();
-      channels.splice(0, channels.length, ...combined.filter(channel => { if (seen.has(channel.channelId)) return false; seen.add(channel.channelId); return true; }));
+      channels.splice(0, channels.length, ...combined.filter(channel => { if (seen.has(channel.channelId)) return false; seen.add(channel.channelId); return true; }).map(channel => exact.some(match => match.channelId === channel.channelId) ? { ...channel, isRelated: false } : channel));
       renderChannelGrid(false);
       const resultCount = $('#resultCount');
-      if (resultCount) resultCount.textContent = `${channels.length} matching channel${channels.length === 1 ? '' : 's'}`;
+      const exactTotal = channels.filter(channel => !channel.isRelated).length;
+      const relatedTotal = channels.length - exactTotal;
+      if (resultCount) resultCount.textContent = `${exactTotal} exact · ${relatedTotal} related`;
       const subtitle = $('#resultsSub');
-      if (subtitle) subtitle.textContent = `Public channel results for “${query}”. Review the match reasons on each card.`;
-      const searchStatus = data.searchWarning || (channels.length >= 5 ? `Found ${channels.length} matching channels.` : `Found ${channels.length} matching channel${channels.length === 1 ? '' : 's'}.`);
-      progress.innerHTML = `<div class="search-done">${escHtml(searchStatus)}${searchUsage ? ` YouTube search calls used today: ${searchUsage.calls}/${searchUsage.limit}.` : ''}</div>`;
+      if (subtitle) subtitle.textContent = `Exact filter matches appear first. Related channels match the topic but miss a selected filter.`;
+      const searchStatus = data.searchWarning || `Found ${exactTotal} exact match${exactTotal === 1 ? '' : 'es'}${relatedTotal ? ` and ${relatedTotal} related channel${relatedTotal === 1 ? '' : 's'}` : ''}.`;
+      progress.innerHTML = `<div class="search-done">${escHtml(searchStatus)}${relatedTotal ? ' Related topic channels are also shown below.' : ''}${searchUsage ? ` YouTube search calls used today: ${searchUsage.calls}/${searchUsage.limit}.` : ''}</div>`;
       const empty = $('#noResults');
       if (empty) {
         empty.hidden = channels.length > 0;
-        if (!channels.length) empty.innerHTML = `<b>No channels matched those filters yet.</b><p>${escHtml(data.searchWarning || 'Try a broader subscriber range, include channels with unknown details, or search another phrase.')}</p>`;
+        if (!channels.length) empty.innerHTML = `<b>YouTube did not return channels for this search.</b><p>${escHtml(data.searchWarning || 'Try a shorter topic or another search region.')}</p>`;
         else empty.innerHTML = '';
       }
       const more = $('#loadMoreRoot');

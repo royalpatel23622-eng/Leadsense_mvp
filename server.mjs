@@ -4,7 +4,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { interpretSearchQuery } from './lib/search-query.mjs';
-import { dedupeChannelsById, filterByDeclaredCountry, filterByPublicSubscribers, normalizeSubscriberRange } from './lib/search-filters.mjs';
+import { dedupeChannelsById, describeFilterMisses, filterByDeclaredCountry, filterByPublicSubscribers, normalizeSubscriberRange } from './lib/search-filters.mjs';
+import { isShortDurationCandidate } from './lib/youtube-metadata.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = path.join(ROOT, 'outputs');
@@ -271,7 +272,9 @@ async function youtubeSearch(body) {
   const query = requireText(body.query, 'Search phrase', 120);
   const maxResults = Math.max(1, Math.min(50, Number(body.maxResults) || 20));
   const targetMatches = 5;
-  const maxSearchPages = 5;
+  // One search.list call costs substantially more quota than the metadata endpoints.
+  // Keep each interaction bounded; the UI can ask for the next page explicitly.
+  const maxSearchPages = 1;
   const { min: minSubscribers, max: maxSubscribers } = normalizeSubscriberRange(body.minSubscribers, body.maxSubscribers);
   const regionCode = optionalText(body.regionCode, 2)?.toUpperCase();
   if (regionCode && !/^[A-Z]{2}$/.test(regionCode)) throw Object.assign(new Error('Choose a valid two-letter country code.'), { status: 400, code: 'INVALID_REGION' });
@@ -284,6 +287,7 @@ async function youtubeSearch(body) {
   const unknownCountryOnly = body.unknownCountryOnly === true;
   const excludeIndia = body.excludeIndia === true;
   const foundById = new Map();
+  const candidatesById = new Map();
   let lastApiUsage = { calls: 0, limit: SEARCH_LIMIT, source: 'unavailable' };
   let pagesChecked = 0;
   let searchWarning = null;
@@ -319,8 +323,8 @@ async function youtubeSearch(body) {
       let details;
       try {
         details = await googleGet('channels', {
-          key: YOUTUBE_KEY, part: 'snippet,statistics', id: ids.join(','),
-          fields: 'items(id,snippet(title,description,customUrl,country,publishedAt,thumbnails(default,medium,high)),statistics(subscriberCount,viewCount,videoCount))',
+          key: YOUTUBE_KEY, part: 'snippet,statistics,topicDetails', id: ids.join(','),
+          fields: 'items(id,snippet(title,description,customUrl,country,publishedAt,thumbnails(default,medium,high)),statistics(subscriberCount,viewCount,videoCount),topicDetails(topicCategories))',
         });
       } catch (error) {
         if (!foundById.size) throw error;
@@ -339,17 +343,59 @@ async function youtubeSearch(body) {
         subscribers: channel.statistics?.subscriberCount ?? null,
         totalViews: channel.statistics?.viewCount ?? null,
         videoCount: channel.statistics?.videoCount ?? null,
+        topicCategories: channel.topicDetails?.topicCategories || [],
         channelUrl: `https://www.youtube.com/channel/${encodeURIComponent(channel.id)}`,
         fetchedAt: new Date().toISOString(),
         source: 'YouTube Data API',
       }));
     }
+    for (const item of items) candidatesById.set(item.channelId, item);
     const countryFiltered = filterByDeclaredCountry(items.filter(item => !(excludeIndia && item.countryCode === 'IN')), declaredCountries, includeUnknown, unknownCountryOnly);
     const subscriberFiltered = filterByPublicSubscribers(countryFiltered, { min: minSubscribers, max: maxSubscribers }, body.includeUnknownSubscribers !== false);
     for (const item of subscriberFiltered) foundById.set(item.channelId, item);
 
     pageToken = nextPageToken;
     if (foundById.size >= targetMatches || !pageToken) break;
+  }
+
+  // If the channel index itself returned fewer than five candidates, try one
+  // official video search page and use its channel IDs as discovery leads.
+  // This costs one extra search.list call only in the low-candidate case.
+  if (candidatesById.size < targetMatches) {
+    try {
+      const pageUsage = await reserveSearchCall();
+      lastApiUsage = { calls: pageUsage, limit: SEARCH_LIMIT, source: 'this app only' };
+      pagesChecked += 1;
+      const videoSearch = await googleGet('search', {
+        key: YOUTUBE_KEY, part: 'snippet', type: 'video', q: query, maxResults,
+        regionCode, relevanceLanguage,
+        fields: 'items(snippet(channelId))',
+      });
+      const videoChannelIds = dedupeChannelsById((videoSearch.items || []).map(item => ({ channelId: item.snippet?.channelId })).filter(item => item.channelId)).map(item => item.channelId)
+        .filter(id => !candidatesById.has(id));
+      if (videoChannelIds.length) {
+        const details = await googleGet('channels', {
+          key: YOUTUBE_KEY, part: 'snippet,statistics,topicDetails', id: videoChannelIds.join(','),
+          fields: 'items(id,snippet(title,description,customUrl,country,publishedAt,thumbnails(default,medium,high)),statistics(subscriberCount,viewCount,videoCount),topicDetails(topicCategories))',
+        });
+        const detailsById = new Map((details.items || []).map(channel => [channel.id, channel]));
+        const videoCandidates = videoChannelIds.map(id => detailsById.get(id)).filter(Boolean).map(channel => ({
+          channelId: channel.id, name: channel.snippet?.title || 'Untitled channel', description: channel.snippet?.description || '',
+          customUrl: channel.snippet?.customUrl || null, countryCode: channel.snippet?.country || null, publishedAt: channel.snippet?.publishedAt || null,
+          thumbnail: channel.snippet?.thumbnails?.medium?.url || channel.snippet?.thumbnails?.default?.url || null,
+          subscribers: channel.statistics?.subscriberCount ?? null, totalViews: channel.statistics?.viewCount ?? null,
+          videoCount: channel.statistics?.videoCount ?? null, topicCategories: channel.topicDetails?.topicCategories || [],
+          channelUrl: `https://www.youtube.com/channel/${encodeURIComponent(channel.id)}`, fetchedAt: new Date().toISOString(), source: 'YouTube Data API',
+        }));
+        for (const item of videoCandidates) candidatesById.set(item.channelId, item);
+        const countryFiltered = filterByDeclaredCountry(videoCandidates.filter(item => !(excludeIndia && item.countryCode === 'IN')), declaredCountries, includeUnknown, unknownCountryOnly);
+        for (const item of filterByPublicSubscribers(countryFiltered, { min: minSubscribers, max: maxSubscribers }, body.includeUnknownSubscribers !== false)) foundById.set(item.channelId, item);
+      }
+    } catch (error) {
+      searchWarning = candidatesById.size
+        ? `YouTube returned only ${candidatesById.size} channel candidates. The broader search could not finish: ${error.message || 'try again later.'}`
+        : `YouTube did not return channel candidates, and the broader search could not finish: ${error.message || 'try again later.'}`;
+    }
   }
 
   const hasMore = Boolean(pageToken);
@@ -359,8 +405,17 @@ async function youtubeSearch(body) {
     searchWarning = `YouTube had no more results for these filters. Found ${foundById.size} matching channel${foundById.size === 1 ? '' : 's'}; try a broader search to find more.`;
   }
 
+  const exactIds = new Set(foundById.keys());
+  const relatedItems = foundById.size >= targetMatches ? [] : [...candidatesById.values()]
+    .filter(item => !exactIds.has(item.channelId))
+    .map(item => ({ ...item, relatedReasons: describeFilterMisses(item, {
+      countryCodes: declaredCountries, includeUnknown, unknownOnly: unknownCountryOnly, excludeIndia,
+      min: minSubscribers, max: maxSubscribers, includeUnknownSubscribers: body.includeUnknownSubscribers !== false,
+    }) }));
+
   return {
     items: [...foundById.values()],
+    relatedItems,
     nextPageToken: pageToken,
     searchPages: pagesChecked,
     targetMatches,
@@ -374,14 +429,24 @@ async function youtubeChannelInspection(body) {
   if (!YOUTUBE_KEY) throw Object.assign(new Error('Live YouTube search is not set up yet. Add YOUTUBE_API_KEY on the server, then restart the app.'), { status: 503, code: 'YOUTUBE_NOT_CONFIGURED' });
   const channelId = requireText(body.channelId, 'Channel ID', 64);
   if (!/^UC[a-zA-Z0-9_-]{22}$/.test(channelId)) throw Object.assign(new Error('That YouTube channel ID is not valid. Open a live search result and try again.'), { status: 400, code: 'INVALID_CHANNEL_ID' });
-  const channelResponse = await googleGet('channels', { key: YOUTUBE_KEY, part: 'snippet,statistics,contentDetails', id: channelId, fields: 'items(id,snippet(title,description,customUrl,country,publishedAt,thumbnails(default,medium,high)),statistics(subscriberCount,viewCount,videoCount),contentDetails(relatedPlaylists(uploads)))' });
+  const channelResponse = await googleGet('channels', { key: YOUTUBE_KEY, part: 'snippet,statistics,contentDetails,topicDetails', id: channelId, fields: 'items(id,snippet(title,description,customUrl,country,publishedAt,thumbnails(default,medium,high)),statistics(subscriberCount,viewCount,videoCount),contentDetails(relatedPlaylists(uploads)),topicDetails(topicCategories))' });
   const channel = channelResponse.items?.[0];
   if (!channel) throw Object.assign(new Error('YouTube could not find that public channel.'), { status: 404, code: 'CHANNEL_NOT_FOUND' });
   const uploadsPlaylist = channel.contentDetails?.relatedPlaylists?.uploads;
-  if (!uploadsPlaylist) return { channel: { channelId, name: channel.snippet?.title || 'Untitled channel', description: channel.snippet?.description || '', countryCode: channel.snippet?.country || null, publishedAt: channel.snippet?.publishedAt || null, subscribers: channel.statistics?.subscriberCount ?? null, totalViews: channel.statistics?.viewCount ?? null, videoCount: channel.statistics?.videoCount ?? null }, videos: [], fetchedAt: new Date().toISOString(), source: 'YouTube Data API' };
+  const baseChannel = { channelId, name: channel.snippet?.title || 'Untitled channel', description: channel.snippet?.description || '', customUrl: channel.snippet?.customUrl || null, countryCode: channel.snippet?.country || null, publishedAt: channel.snippet?.publishedAt || null, subscribers: channel.statistics?.subscriberCount ?? null, totalViews: channel.statistics?.viewCount ?? null, videoCount: channel.statistics?.videoCount ?? null, topicCategories: channel.topicDetails?.topicCategories || [], channelUrl: `https://www.youtube.com/channel/${encodeURIComponent(channelId)}` };
+  let playlists = [];
+  let playlistWarning = null;
+  try {
+    const playlistResponse = await googleGet('playlists', { key: YOUTUBE_KEY, part: 'snippet,contentDetails,status', channelId, maxResults: 10, fields: 'items(id,snippet(title,description,publishedAt,thumbnails(default,medium,high)),contentDetails(itemCount),status(privacyStatus))' });
+    playlists = (playlistResponse.items || []).filter(item => item.status?.privacyStatus === 'public').map(item => ({ playlistId: item.id, title: item.snippet?.title || 'Untitled playlist', description: item.snippet?.description || '', publishedAt: item.snippet?.publishedAt || null, itemCount: item.contentDetails?.itemCount ?? null, playlistUrl: `https://www.youtube.com/playlist?list=${encodeURIComponent(item.id)}` }));
+  } catch {
+    // Playlist discovery is optional; don't break the existing recent-upload inspection.
+    playlistWarning = 'YouTube could not load playlists this time.';
+  }
+  if (!uploadsPlaylist) return { channel: baseChannel, videos: [], playlists, playlistWarning, fetchedAt: new Date().toISOString(), source: 'YouTube Data API' };
   const playlist = await googleGet('playlistItems', { key: YOUTUBE_KEY, part: 'snippet,contentDetails', playlistId: uploadsPlaylist, maxResults: 10, fields: 'items(contentDetails(videoId,videoPublishedAt),snippet(title,description,publishedAt,thumbnails(default,medium,high)))' });
   const videoIds = [...new Set((playlist.items || []).map(item => item.contentDetails?.videoId).filter(Boolean))];
-  const videoResponse = videoIds.length ? await googleGet('videos', { key: YOUTUBE_KEY, part: 'snippet,statistics', id: videoIds.join(','), fields: 'items(id,snippet(title,description,publishedAt,thumbnails(default,medium,high)),statistics(viewCount,likeCount,commentCount))' }) : { items: [] };
+  const videoResponse = videoIds.length ? await googleGet('videos', { key: YOUTUBE_KEY, part: 'snippet,statistics,contentDetails,liveStreamingDetails', id: videoIds.join(','), fields: 'items(id,snippet(title,description,publishedAt,thumbnails(default,medium,high),liveBroadcastContent),statistics(viewCount,likeCount,commentCount),contentDetails(duration),liveStreamingDetails(actualStartTime,actualEndTime,scheduledStartTime,concurrentViewers))' }) : { items: [] };
   const videosById = new Map((videoResponse.items || []).map(video => [video.id, video]));
   const videos = videoIds.map(id => videosById.get(id)).filter(Boolean).map(video => ({
     videoId: video.id,
@@ -392,11 +457,17 @@ async function youtubeChannelInspection(body) {
     views: video.statistics?.viewCount ?? null,
     likes: video.statistics?.likeCount ?? null,
     comments: video.statistics?.commentCount ?? null,
+    duration: video.contentDetails?.duration || null,
+    liveBroadcastContent: video.snippet?.liveBroadcastContent || 'none',
+    liveStreamingDetails: video.liveStreamingDetails || null,
+    shortDurationCandidate: isShortDurationCandidate(video.contentDetails?.duration),
     videoUrl: `https://www.youtube.com/watch?v=${encodeURIComponent(video.id)}`,
   }));
   return {
-    channel: { channelId, name: channel.snippet?.title || 'Untitled channel', description: channel.snippet?.description || '', customUrl: channel.snippet?.customUrl || null, countryCode: channel.snippet?.country || null, publishedAt: channel.snippet?.publishedAt || null, subscribers: channel.statistics?.subscriberCount ?? null, totalViews: channel.statistics?.viewCount ?? null, videoCount: channel.statistics?.videoCount ?? null, channelUrl: `https://www.youtube.com/channel/${encodeURIComponent(channelId)}` },
+    channel: baseChannel,
     videos,
+    playlists,
+    playlistWarning,
     fetchedAt: new Date().toISOString(),
     source: 'YouTube Data API',
   };

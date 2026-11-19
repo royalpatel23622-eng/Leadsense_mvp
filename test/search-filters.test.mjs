@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dedupeChannelsById, filterByDeclaredCountry, filterByPublicSubscribers, normalizeSubscriberRange } from '../lib/search-filters.mjs';
+import { dedupeChannelsById, describeFilterMisses, filterByDeclaredCountry, filterByPublicSubscribers, normalizeSubscriberRange } from '../lib/search-filters.mjs';
 
 test('validates inclusive subscriber bounds', () => {
   assert.deepEqual(normalizeSubscriberRange('5000', '100000'), { min: 5000, max: 100000 });
@@ -26,4 +26,13 @@ test('filters creator-declared country separately from the YouTube search region
   assert.deepEqual(filterByDeclaredCountry(channels, ['CA'], false).map(x => x.channelId), ['ca']);
   assert.deepEqual(filterByDeclaredCountry(channels, [], true, true).map(x => x.channelId), ['unknown']);
   assert.deepEqual(filterByDeclaredCountry(channels, [], false).map(x => x.channelId), ['us', 'ca']);
+});
+
+test('explains why a topic candidate missed the selected filters', () => {
+  assert.deepEqual(describeFilterMisses({ countryCode: 'CA', subscribers: 25000 }, { countryCodes: ['US'], min: 50000, max: 100000 }), [
+    'Declared country is outside your selection', 'Subscriber count is outside your range',
+  ]);
+  assert.deepEqual(describeFilterMisses({ countryCode: null, subscribers: null }, { countryCodes: ['US'], includeUnknown: false, min: 5000, max: null, includeUnknownSubscribers: false }), [
+    'Country is not listed publicly', 'Subscriber count is not public',
+  ]);
 });

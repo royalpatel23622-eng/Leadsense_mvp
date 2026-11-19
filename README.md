@@ -6,8 +6,9 @@ The backend is a dependency-free Node.js web server. It serves the existing fron
 
 ## What works
 
-- **YouTube discovery:** search by topic, select a creator-declared country and subscriber range, and search across up to 250 candidate channels per request to find at least five matches when available. Each result explains which search phrase, country, and subscriber range matched. Load more continues from the next unsearched YouTube page. Narrow filters, exhausted results, or daily API limits can still mean fewer than five matches; LeadSense never invents channels or silently changes your filters.
-- **Recent upload inspection:** load a channel’s current public details and up to 10 recent uploads when requested. Review public thumbnails and editing yourself; private audience-retention data is not available in public channel search.
+- **YouTube discovery:** search by topic, creator-declared country, and subscriber range. Each search checks one page (up to 50 channels); if YouTube returns fewer than five candidates, it also checks one page of video results for more channel IDs. Use **Load more** to check the next channel page. Exact filter matches appear first. If fewer than five exact matches are found, related topic channels appear separately, with the filter they missed. A narrow search or exhausted YouTube results can still return fewer than five exact matches; LeadSense never invents channels or silently changes your filters.
+- **Channel investigation:** on request, load current public channel fields, YouTube topic categories when available, up to 10 recent uploads, and up to 10 public playlists. Video details include duration and livestream metadata when YouTube supplies them. Videos at or under three minutes are labeled as short-duration candidates only; the API response does not confirm Shorts format.
+- **Creator links:** the official public channel resource does not provide a structured list of external channel links. LeadSense links to the channel so you can review links the creator chose to publish. It does not scrape pages or collect emails and phone numbers.
 - **Search filter draft:** paste a natural-language description and review a rule-based draft for service, search words, countries, subscriber range, and result count. The parser is not an AI model. Each field is editable before searching.
 - **Account access:** Supabase Auth handles sign-up and sign-in. Session tokens use secure, HTTP-only cookies. CRM records and saved search settings are scoped to the signed-in user on the server.
 - **Admin area:** server-side role checks protect admin routes. Admins can review accounts, usage, search status, errors, and service configuration; change roles/status/plans; and set per-user daily search limits. API secret values are never returned.
@@ -61,11 +62,11 @@ If you do not have a Supabase project yet, you can still run the app in demo mod
 2. Enable **YouTube Data API v3** and create an API key.
 3. Restrict the key to the YouTube Data API v3. Keep it server-side.
 4. Set `YOUTUBE_API_KEY` in `.env` locally or in the Render service environment, then restart/redeploy.
-5. Search from the app. The app uses `search.list` for channel discovery, then one `channels.list` batch for channel details. A search can make two API requests, but only one `search.list` call. The Google documentation currently lists a default 100-call/day `search.list` bucket; quotas can change. LeadSense also has its own configurable daily search cap, default 40, stored as an app call count—not a reading of your whole Google Cloud quota. See [YouTube quota costs](https://developers.google.com/youtube/data/determine_quota_cost) and [search.list](https://developers.google.com/youtube/v3/docs/search/list).
+5. Search from the app. Each search checks one page of up to 50 channel candidates and batches their details with `channels.list`. If YouTube returns fewer than five channel candidates, LeadSense makes one additional official `search.list(type=video)` request and uses those videos’ channel IDs to find more leads. **Load more** checks the next channel page. The app-side daily limit defaults to 40 `search.list` calls; it is not a reading of your full Google Cloud quota. Metadata inspection uses additional API requests for channel, playlist, upload, and video details. Quota costs and Google Cloud limits can change. See [YouTube quota costs](https://developers.google.com/youtube/data/determine_quota_cost) and [search.list](https://developers.google.com/youtube/v3/docs/search/list).
 
-Opening **Review recent uploads** requests channel details, its uploads playlist, and up to 10 videos. These add YouTube API requests. Each account can inspect up to 20 channels per day by default; change that with `USER_DAILY_ANALYSIS_LIMIT`.
+Opening **Review recent uploads** requests channel details, up to 10 public playlists, the uploads playlist, and up to 10 videos. These add YouTube API requests. Each account can inspect up to 20 channels per day by default; change that with `USER_DAILY_ANALYSIS_LIMIT`.
 
-The app does not scrape YouTube pages, collect email addresses or phone numbers, estimate revenue, or create creator scores. Users can open a channel and check contact links that the creator chose to make public. The API key is never included in frontend HTML or requests from the browser.
+The app does not scrape YouTube pages, collect email addresses or phone numbers, estimate revenue, or create creator scores. Users can open a channel and check contact links that the creator chose to make public. The API key is never included in frontend HTML or requests from the browser. See [docs/youtube-metadata-review.md](docs/youtube-metadata-review.md) for the feature-by-feature source, availability, restrictions, retention, and implementation status.
 
 ## Deploy to Render
 
@@ -139,4 +140,4 @@ The app stores search phrases, filters, app request counts, user-created CRM not
 
 ## Tests
 
-Run `npm test` to check the natural-language filter parser. The project uses Node’s built-in test runner without extra packages.
+Run `npm test` to check the search filters, filter explanations, query parser, and YouTube duration labels. The project uses Node’s built-in test runner without extra packages.
