@@ -1,0 +1,32 @@
+# Testing and CI
+
+## Local checks
+
+Run from the repository root:
+
+```powershell
+npm ci
+npm run check
+npm test
+npx playwright install chromium
+npm run test:browser
+git diff --check
+```
+
+`npm test` uses Node's test runner and mocks Supabase and YouTube responses. It does not spend live YouTube quota or change a Supabase database. Browser tests launch the local app and verify selected desktop/mobile flows; they do not cover every interaction at every viewport.
+
+## CI
+
+`.github/workflows/ci.yml` runs on pushes to `main` and pull requests targeting `main`. It installs locked dependencies, Chromium, syntax checks, integration/unit tests, Playwright tests, and a patch whitespace check. The normal CI job needs no service credentials because external APIs are mocked.
+
+## Live staging verification checklist
+
+Automated tests cannot prove these external behaviors. On a staging Supabase project and staging app, verify:
+
+- Apply migrations 005 and 006 after the previously applied migrations; inspect their functions and `cron.job` entries.
+- Confirm an expired creator has only its YouTube fields scrubbed while notes, evidence, contacts, and custom label remain.
+- Confirm two accounts cannot read or modify each other's creator records.
+- Sign up, log in, refresh an expired session, log out, and confirm the old session is rejected by Supabase.
+- Send repeated requests from two app instances and verify the shared limiter returns 429 consistently.
+- Check CSP console errors and all primary flows in Chromium at 1440, 1280, 768, 390, and 360 CSS pixels.
+- Run one authorized YouTube search and inspection, check the UI's partial/quota messaging, and verify app counters against Cloud Console. Do not infer Google's full quota use from the app counter.

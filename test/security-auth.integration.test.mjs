@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 process.env.NODE_ENV = 'test';
 process.env.APP_URL = '';
-process.env.TRUST_PROXY = 'false';
+process.env.TRUSTED_CLIENT_IP_HEADER = '';
 process.env.SUPABASE_URL = 'https://supabase.test';
 process.env.SUPABASE_SECRET_KEY = 'sb_secret_test';
 process.env.SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_test';
@@ -18,6 +18,7 @@ let createAppServer;
 let securityHeadersFor;
 let getClientIp;
 let revocationFail = false;
+let rateLimitFail = false;
 let rows = [];
 let taskRows = [];
 let upstreamCalls = [];
@@ -37,6 +38,10 @@ globalThis.fetch = async (input, init = {}) => {
   if (url.pathname.startsWith('/auth/v1/logout')) return revocationFail ? response({ message: 'failed' }, 503) : response(null, 204);
   if (!url.pathname.startsWith('/rest/v1/')) throw new Error(`Unexpected Supabase route ${url.pathname}`);
   const table = url.pathname.replace('/rest/v1/', '');
+  if (table === 'rpc/take_api_rate_limit_slot') {
+    if (rateLimitFail) return response({ message: 'API_RATE_LIMITED' }, 429);
+    return response(1);
+  }
   if (table === 'app_users') return response([{ id: userId, email: 'member@example.com', role: 'member', status: 'active', plan: 'free' }]);
   if (table === 'external_prospects') {
     const owner = url.searchParams.get('user_id')?.replace(/^eq\./, '');
@@ -93,7 +98,7 @@ after(async () => {
   globalThis.fetch = originalFetch;
 });
 
-function reset() { rows = []; taskRows = []; upstreamCalls = []; revocationFail = false; }
+function reset() { rows = []; taskRows = []; upstreamCalls = []; revocationFail = false; rateLimitFail = false; }
 
 test('signup validates its inputs and login sets secure server-managed session cookies', async () => {
   reset();
@@ -157,27 +162,49 @@ test('logout refreshes and revokes the current session when only the refresh coo
 test('HSTS is sent only for production HTTPS, including HTTPS behind the configured proxy', async () => {
   const req = { headers: { 'x-forwarded-proto': 'https' }, socket: {} };
   process.env.NODE_ENV = 'development';
-  process.env.TRUST_PROXY = 'true';
+  process.env.TRUSTED_CLIENT_IP_HEADER = 'cf-connecting-ip';
   assert.equal(securityHeadersFor(req)['Strict-Transport-Security'], undefined);
   process.env.NODE_ENV = 'production';
-  process.env.TRUST_PROXY = 'false';
+  process.env.TRUSTED_CLIENT_IP_HEADER = '';
   assert.equal(securityHeadersFor(req)['Strict-Transport-Security'], undefined);
-  process.env.TRUST_PROXY = 'true';
+  process.env.TRUSTED_CLIENT_IP_HEADER = 'cf-connecting-ip';
   assert.match(securityHeadersFor(req)['Strict-Transport-Security'], /max-age/);
-  process.env.TRUST_PROXY = 'false';
+  process.env.TRUSTED_CLIENT_IP_HEADER = '';
   process.env.APP_URL = 'https://leadsense.example';
   assert.match(securityHeadersFor({ headers: {}, socket: {} })['Strict-Transport-Security'], /max-age/);
   process.env.NODE_ENV = 'test';
   process.env.APP_URL = '';
 });
 
-test('forwarded IP is ignored unless a trusted proxy is explicitly configured', () => {
-  const req = { headers: { 'x-forwarded-for': '198.51.100.20, 10.0.0.4' }, socket: { remoteAddress: '127.0.0.1' } };
-  process.env.TRUST_PROXY = 'false';
+test('caller-controlled X-Forwarded-For is ignored and only a configured proxy header is trusted', () => {
+  const req = { headers: { 'x-forwarded-for': '198.51.100.20, 10.0.0.4', 'cf-connecting-ip': '203.0.113.40' }, socket: { remoteAddress: '127.0.0.1' } };
+  process.env.TRUSTED_CLIENT_IP_HEADER = '';
   assert.equal(getClientIp(req), '127.0.0.1');
-  process.env.TRUST_PROXY = 'true';
-  assert.equal(getClientIp(req), '198.51.100.20');
-  process.env.TRUST_PROXY = 'false';
+  process.env.TRUSTED_CLIENT_IP_HEADER = 'x-forwarded-for';
+  assert.equal(getClientIp(req), '127.0.0.1');
+  process.env.TRUSTED_CLIENT_IP_HEADER = 'cf-connecting-ip';
+  assert.equal(getClientIp(req), '203.0.113.40');
+  req.headers['cf-connecting-ip'] = '198.51.100.20, 10.0.0.4';
+  assert.equal(getClientIp(req), '127.0.0.1');
+  process.env.TRUSTED_CLIENT_IP_HEADER = '';
+});
+
+test('production request limiting uses shared hashed buckets and returns 429 when the store rejects a slot', async () => {
+  reset();
+  process.env.NODE_ENV = 'production';
+  process.env.APP_URL = 'https://leadsense.example';
+  process.env.TRUSTED_CLIENT_IP_HEADER = 'cf-connecting-ip';
+  rateLimitFail = true;
+  const limited = await originalFetch(`${baseUrl}/api/auth/signup`, { method: 'POST', headers: { origin: process.env.APP_URL, 'cf-connecting-ip': '203.0.113.40', 'content-type': 'application/json' }, body: JSON.stringify({ email: 'new@example.test', password: 'long-password-123' }) });
+  assert.equal(limited.status, 429);
+  assert.equal(limited.headers.get('retry-after'), '60');
+  const limitCall = upstreamCalls.find(call => call.url.pathname.endsWith('/rpc/take_api_rate_limit_slot'));
+  assert.equal(limitCall.body.p_limit, 5);
+  assert.match(limitCall.body.p_bucket_hash, /^[0-9a-f]{64}$/);
+  assert.equal(JSON.stringify(limitCall.body).includes('203.0.113.40'), false);
+  process.env.NODE_ENV = 'test';
+  process.env.APP_URL = '';
+  process.env.TRUSTED_CLIENT_IP_HEADER = '';
 });
 
 test('prospect CRUD scopes every operation to the signed-in owner and ignores forged ownership', async () => {

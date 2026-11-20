@@ -32,12 +32,26 @@ globalThis.fetch = async (input, init = {}) => {
   const table = url.pathname.replace('/rest/v1/', '');
   const method = init.method || 'GET';
   if (table === 'app_users') return jsonResponse(users.filter(item => item.id === (url.searchParams.get('id') || '').replace(/^eq\./, '')));
+  if (table === 'rpc/save_creator_lead_profile') {
+    const input = JSON.parse(init.body);
+    let row = tables.creator_leads.find(item => item.user_id === input.p_user_id && item.channel_id === input.p_channel_id);
+    if (row) Object.assign(row, { channel_url: input.p_channel_url, creator_name: input.p_creator_name, expires_at: input.p_expires_at });
+    else {
+      row = { id: leadId, user_id: input.p_user_id, channel_id: input.p_channel_id, channel_url: input.p_channel_url, creator_name: input.p_creator_name, service_category: 'Other', stage: 'Researching', notes: '', display_label: null, expires_at: input.p_expires_at, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+      tables.creator_leads.push(row);
+    }
+    return jsonResponse([row]);
+  }
   if (!tables[table]) return jsonResponse([]);
   const rows = tables[table];
   const matches = rows.filter(row => rowMatches(url.searchParams, row));
   if (method === 'POST') {
     const value = JSON.parse(init.body);
-    if (table === 'creator_leads' && rows.some(row => row.user_id === value.user_id && row.channel_id === value.channel_id)) return jsonResponse({ message: 'duplicate key' }, 409);
+    if (table === 'creator_leads' && rows.some(row => row.user_id === value.user_id && row.channel_id === value.channel_id)) {
+      const existing = rows.find(row => row.user_id === value.user_id && row.channel_id === value.channel_id);
+      Object.assign(existing, value);
+      return jsonResponse([existing]);
+    }
     const result = { ...value, id: table === 'creator_leads' ? leadId : table === 'creator_evidence' ? evidenceId : contactId, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
     if (table === 'creator_leads') result.expires_at = new Date(Date.now() + 29 * 86_400_000).toISOString();
     rows.push(result);
@@ -57,12 +71,7 @@ globalThis.fetch = async (input, init = {}) => {
     }
     return jsonResponse([]);
   }
-  let output = matches;
-  if (url.searchParams.has('expires_at')) {
-    const limit = Date.parse(url.searchParams.get('expires_at').replace(/^gt\./, ''));
-    output = output.filter(row => Date.parse(row.expires_at) > limit);
-  }
-  return jsonResponse(output);
+  return jsonResponse(matches);
 };
 
 before(async () => {
@@ -84,11 +93,18 @@ async function call(path, { user = 'user-a-token', method = 'GET', body } = {}) 
 
 test('creator leads keep source-backed evidence and public contacts separate and explain evidence status', async () => {
   const create = await call('/api/creator-leads', { method: 'POST', body: { channel_id: channelId, creator_name: 'Creator One', channel_url: `https://www.youtube.com/channel/${channelId}`, service_category: 'Video editing' } });
-  assert.equal(create.status, 201);
+  assert.equal(create.status, 200);
   assert.equal(create.body.expires_at !== undefined, true);
   assert.ok(Date.parse(create.body.expires_at) <= Date.now() + 30 * 86_400_000);
-  const duplicate = await call('/api/creator-leads', { method: 'POST', body: { channel_id: channelId, creator_name: 'Creator One', channel_url: `https://www.youtube.com/channel/${channelId}` } });
+  tables.creator_leads[0].notes = 'My private research note';
+  tables.creator_leads[0].stage = 'Follow-up';
+  tables.creator_leads[0].display_label = 'Founder to contact';
+  const duplicate = await call('/api/creator-leads', { method: 'POST', body: { channel_id: channelId, creator_name: 'Creator One (refreshed)', channel_url: `https://www.youtube.com/channel/${channelId}` } });
   assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.body.notes, 'My private research note');
+  assert.equal(duplicate.body.stage, 'Follow-up');
+  assert.equal(duplicate.body.display_label, 'Founder to contact');
+  assert.equal(duplicate.body.creator_name, 'Creator One (refreshed)');
 
   const evidence = await call(`/api/creator-leads/${leadId}/evidence`, { method: 'POST', body: { service_category: 'Video editing', evidence_type: 'public_request', strength: 'strong', source_url: 'https://creator.example/jobs', excerpt: 'I am looking for a video editor to help with weekly uploads.' } });
   assert.equal(evidence.status, 201);
@@ -142,4 +158,32 @@ test('deleting a saved creator removes its linked evidence and contacts', async 
   assert.equal((await call('/api/creator-leads')).body.length, 0);
   assert.equal(tables.creator_evidence.length, 0);
   assert.equal(tables.creator_contacts.length, 0);
+});
+
+test('expired YouTube fields are hidden while saved creator notes, evidence, and contacts remain', async () => {
+  await call('/api/creator-leads', { method: 'POST', body: { channel_id: channelId, creator_name: 'Creator One', channel_url: `https://www.youtube.com/channel/${channelId}` } });
+  await call(`/api/creator-leads/${leadId}/evidence`, { method: 'POST', body: { service_category: 'Editing', evidence_type: 'context_note', strength: 'weak', source_url: 'https://creator.example/about', excerpt: 'A user-authored note from independent research.' } });
+  await call(`/api/creator-leads/${leadId}/contacts`, { method: 'POST', body: { contact_type: 'website', contact_value: 'https://creator.example', source_url: 'https://creator.example/about' } });
+  const saved = tables.creator_leads[0];
+  saved.notes = 'A user-authored note that must remain';
+  saved.stage = 'Contacted';
+  saved.display_label = 'Keep this label';
+  saved.expires_at = new Date(Date.now() - 1).toISOString();
+  saved.channel_id = null;
+  saved.channel_url = null;
+  saved.creator_name = null;
+
+  const response = await call('/api/creator-leads');
+  assert.equal(response.status, 200);
+  assert.equal(response.body.length, 1);
+  assert.equal(response.body[0].youtube_data_expired, true);
+  assert.equal(response.body[0].channel_id, null);
+  assert.equal(response.body[0].channel_url, null);
+  assert.equal(response.body[0].creator_name, null);
+  assert.equal(response.body[0].notes, 'A user-authored note that must remain');
+  assert.equal(response.body[0].stage, 'Contacted');
+  assert.equal(response.body[0].display_label, 'Keep this label');
+  assert.equal(response.body[0].evidence.length, 1);
+  assert.equal(response.body[0].contacts.length, 1);
+  assert.equal(tables.creator_leads.length, 1);
 });

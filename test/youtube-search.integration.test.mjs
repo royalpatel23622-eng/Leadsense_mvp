@@ -7,6 +7,7 @@ process.env.SUPABASE_URL = 'https://supabase.test';
 process.env.SUPABASE_SECRET_KEY = 'sb_secret_test';
 process.env.SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_test';
 process.env.YOUTUBE_DAILY_SEARCH_LIMIT = '40';
+process.env.API_YOUTUBE_SEARCH_RATE_LIMIT = '100';
 
 let scenario;
 let server;
@@ -235,6 +236,22 @@ test('records a first-page YouTube failure as failed', async () => {
   try {
     const response = await postSearch({ query: 'failure', requestedCount: 5 });
     assert.equal(response.status, 502);
+    assert.equal(scenario.historyStatuses.at(-1), 'failed');
+  } finally { globalThis.fetch = previousFetch; }
+});
+
+test('rejects malformed YouTube search payloads and records the failed outcome', async () => {
+  reset({ pages: {}, channelData: {} });
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = new URL(String(input));
+    if (url.hostname === 'www.googleapis.com') return jsonResponse({ items: 'not-an-array' });
+    return previousFetch(input, init);
+  };
+  try {
+    const response = await postSearch({ query: 'malformed response', requestedCount: 5 });
+    assert.equal(response.status, 502);
+    assert.equal(response.body.error.code, 'YOUTUBE_INVALID_RESPONSE');
     assert.equal(scenario.historyStatuses.at(-1), 'failed');
   } finally { globalThis.fetch = previousFetch; }
 });

@@ -49,6 +49,16 @@ globalThis.fetch = async (input, init = {}) => {
     if (table === 'youtube_api_usage') return json([{ search_calls: appSearchCalls, other_units: appOtherUnits, channels_list_calls: appMethodCalls['channels.list'] || 0, videos_list_calls: 0, playlists_list_calls: 0, playlist_items_list_calls: 0 }]);
     if (table === 'discovery_searches' && init.method === 'POST') return json([{ id: '44444444-4444-4444-8444-444444444444' }], 201);
     if (table === 'discovery_searches' && init.method === 'PATCH') return json([]);
+    if (table === 'rpc/save_creator_lead_profile') {
+      const input = JSON.parse(init.body);
+      let row = creatorRows.find(item => item.user_id === input.p_user_id && item.channel_id === input.p_channel_id);
+      if (row) Object.assign(row, { channel_url: input.p_channel_url, creator_name: input.p_creator_name, expires_at: input.p_expires_at });
+      else {
+        row = { id: '33333333-3333-4333-8333-333333333333', user_id: input.p_user_id, channel_id: input.p_channel_id, channel_url: input.p_channel_url, creator_name: input.p_creator_name, service_category: 'Other', stage: 'Researching', notes: '', display_label: null, expires_at: input.p_expires_at, created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+        creatorRows.push(row);
+      }
+      return json([row]);
+    }
     if (table === 'creator_leads') {
       const query = url.searchParams;
       const matching = creatorRows.filter(row => (!query.has('user_id') || row.user_id === query.get('user_id').slice(3)) && (!query.has('channel_id') || row.channel_id === query.get('channel_id').slice(3)) && (!query.has('id') || row.id === query.get('id').slice(3)));

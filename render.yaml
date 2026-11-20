@@ -3,9 +3,9 @@ services:
     name: leadsense-mvp
     runtime: node
     plan: free
-    buildCommand: npm test
+    buildCommand: npm ci && npm run check && npm test
     startCommand: npm start
-    autoDeploy: true
+    autoDeploy: false
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
@@ -20,12 +20,22 @@ services:
         sync: false
       - key: APP_URL
         sync: false
+      - key: TRUSTED_CLIENT_IP_HEADER
+        value: cf-connecting-ip
       - key: YOUTUBE_DAILY_SEARCH_LIMIT
         value: 40
       - key: YOUTUBE_DAILY_OTHER_UNITS_LIMIT
         value: 9000
       - key: API_RATE_LIMIT_PER_MINUTE
         value: 60
+      - key: API_AUTH_LOGIN_RATE_LIMIT
+        value: 10
+      - key: API_AUTH_SIGNUP_RATE_LIMIT
+        value: 5
+      - key: API_YOUTUBE_SEARCH_RATE_LIMIT
+        value: 12
+      - key: API_YOUTUBE_INSPECT_RATE_LIMIT
+        value: 12
       - key: USER_DAILY_SEARCH_LIMIT
         value: 10
       - key: USER_DAILY_ANALYSIS_LIMIT

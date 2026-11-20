@@ -9,24 +9,24 @@ The backend is a dependency-free Node.js web server. It serves the existing fron
 - **YouTube discovery:** search by topic, creator-declared country, and subscriber range. The user selects a requested exact-result count; each request checks up to five channel pages (up to 50 channels each), subject to the app quota. Use **Load more** to continue. Exact filter matches appear first. Related topic channels stay separate and explain which filter they missed. A narrow search or exhausted YouTube results can still return fewer than requested; LeadSense never invents channels or silently changes your filters.
 - **Channel investigation:** on request, load current public channel fields, YouTube topic categories when available, up to 10 recent uploads, and up to 10 public playlists. Each displayed field can be checked for source, API method, retrieval time and availability. The UI labels the upload sample size and does not imply it represents the whole channel. Video details include duration, category ID and livestream metadata when YouTube supplies them. Videos at or under three minutes are labeled as short-duration candidates only; the API response does not confirm Shorts format.
 - **Creator links:** the official public channel resource does not provide a structured list of external channel links. LeadSense links to the channel so you can review links the creator chose to publish. It does not scrape pages or collect emails and phone numbers.
-- **Saved creator workspace:** save a live channel to your private workspace, add your own notes, public evidence links and contact routes, and set a follow-up stage. New evidence and contacts remain unverified until you check them. Only a source-backed strong request that you manually mark as checked can show as an explicit opportunity. Creator IDs, names, and attached notes are deleted after 29 days; refreshing the channel renews this period. The database migration schedules automatic expiry using Supabase `pg_cron`.
+- **Saved creator workspace:** save a live channel to your private workspace, add your own notes, public evidence links and contact routes, and set a follow-up stage. New evidence and contacts remain unverified until you check them. Only a source-backed strong request that you manually mark as checked can show as an explicit opportunity. YouTube-sourced channel ID, name, and URL are cleared after 29 days; your own label, notes, evidence, contacts, and stage remain until you delete the lead. This requires migrations 005 and `pg_cron`.
 - **Search filter draft:** paste a natural-language description and review a rule-based draft for service, search words, countries, subscriber range, and result count. The parser is not an AI model. Each field is editable before searching.
 - **Account access:** Supabase Auth handles sign-up and sign-in. Session tokens use secure, HTTP-only cookies. CRM records and saved search settings are scoped to the signed-in user on the server.
 - **Admin area:** server-side role checks protect admin routes. Admins can review accounts, usage, search status, errors, and service configuration; change roles/status/plans; and set per-user daily search limits. API secret values are never returned.
 - **Search history:** records the user’s search phrase, filters, and completed/failed status. YouTube API result data is not saved.
 - **Honest country labels:** country is shown only when the channel response declares it. `regionCode` changes the search viewing region; it does not identify where a creator lives. Country labels are used only when creator-declared; India is not secretly prioritized or excluded. Unknown remains unknown.
-- **YouTube data retention:** search and inspection responses are returned to the browser and not cached. A saved creator workspace stores only the channel ID/name and creator notes needed for follow-up, then deletes them after 29 days. It does not save YouTube statistics or video metadata snapshots.
+- **YouTube data retention:** search and inspection responses are returned to the browser and not cached. A saved creator workspace stores channel ID/name/URL for follow-up and clears those YouTube-sourced fields after 29 days. It does not save YouTube statistics or video metadata snapshots. User-authored records are retained until the user deletes them.
 - **Quota accounting:** every YouTube API call reserves an atomic per-user slot and an app-wide slot before calling YouTube. `search.list` has its own counter; metadata methods are counted in a separate unit bucket and by method. Counters roll over at midnight Pacific Time. These app counters cannot see API requests made outside LeadSense.
 - **Independent CRM:** add and update business prospects, change stages, make follow-ups, mark tasks done, and export prospects to CSV. These routes never accept YouTube channel IDs or API responses.
-- **Demo mode:** without Supabase, the frontend can show clearly labeled sample records, but account routes require Supabase to be configured. Without a YouTube key, live search shows a clear setup message and examples remain labeled.
-- **Deploy files:** `render.yaml` describes a Render web service. `schema.sql` creates the database tables and the daily search counter.
+- **Local mode:** without Supabase, account-backed features are unavailable. Any locally entered CRM items are labeled as browser-only and are not pre-filled fake leads. Without a YouTube key, live search shows a clear setup message.
+- **Deploy files:** `render.yaml` describes a Render web service. See the migration and deployment guides before setting up a live service.
 
 ## Local setup
 
 Requirements: Node.js 22 or newer. The server has no runtime dependencies; Playwright is a development dependency for browser tests.
 
 1. Copy `.env.example` to `.env`.
-2. Create a Supabase project and run `schema.sql` in **SQL Editor**. Then run `migrations/002_accounts_search_history.sql`, `migrations/003_youtube_quota_accounting.sql`, and `migrations/004_creator_workspace.sql` in the same editor. Before migration 004, enable the `pg_cron` extension from Supabase Database → Extensions if the SQL Editor reports that it is unavailable. The scheduled cleanup must appear in `cron.job` for saved YouTube-linked records to expire automatically.
+2. Create a Supabase project and follow [docs/DATABASE_MIGRATIONS.md](docs/DATABASE_MIGRATIONS.md) for the exact migration order and verification queries. For a new database this includes `schema.sql` and migrations 002–006. Make sure `pg_cron` is enabled; migration 005 protects user-created workspace data from the earlier cascading cleanup.
 3. In Supabase **Settings → API Keys**, copy the project URL and a server-only **Secret key** into `.env`:
 
    ```env
@@ -72,9 +72,9 @@ The app does not scrape YouTube pages, collect email addresses or phone numbers,
 
 ## Deploy to Render
 
-1. In Supabase SQL Editor, apply `schema.sql` if this is a new project, then apply `migrations/002_accounts_search_history.sql`, `migrations/003_youtube_quota_accounting.sql`, and `migrations/004_creator_workspace.sql` in order. Enable the `pg_cron` extension before migration 004 if Supabase has not enabled it. Confirm the `leadsense-purge-expired-creator-workspace` job appears in `cron.job`; otherwise saved YouTube-linked creator records will not be automatically deleted before their 29-day expiry. These migrations add sign-in, search history, persistent quotas, and the private creator workspace.
-2. Push this project folder to a GitHub repository.
-3. In Render, choose **New → Blueprint** and connect the repository. Render reads `render.yaml` and creates a Node web service.
+1. In Supabase SQL Editor, apply `schema.sql` for a new project, followed by migrations `002`, `003`, `004`, `005`, and `006` in order. For an existing project already at migration 004, apply 005 and 006. Enable `pg_cron` before migrations 004/005/006 if Supabase has not enabled it. Migration 005 replaces migration 004's old cascading-delete cleanup. Follow [docs/DATABASE_MIGRATIONS.md](docs/DATABASE_MIGRATIONS.md) and verify the objects before using production data.
+2. Push this project folder to the intended GitHub repository and confirm CI passes.
+3. In Render, create or open the service from **New → Blueprint** and connect the repository. Render reads `render.yaml`; automatic deploy on GitHub push is disabled.
 4. Add these environment values in the Render service settings:
 
    - `SUPABASE_URL` — your project URL
@@ -82,8 +82,9 @@ The app does not scrape YouTube pages, collect email addresses or phone numbers,
    - `APP_URL` — the deployed `https://…onrender.com` URL
    - `YOUTUBE_API_KEY` — optional until live YouTube search is needed
 
-5. Deploy. The app listens on Render’s `PORT` and uses `/api/health` as its health check.
-6. Check `https://YOUR_APP/api/health`. It should show `database: "connected"`; after adding the YouTube key, it should show `youtube: "configured"`.
+5. Set `TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip` as configured by the Blueprint. Keep `APP_URL` set to the service's public HTTPS URL.
+6. Deploy manually from Render after reviewing the commit. The app listens on Render's `PORT` and uses `/api/health` as its health check.
+7. Check `https://YOUR_APP/api/health`. It should show `database: "connected"`; after adding the YouTube key, it should show `youtube: "configured"`. This endpoint does not verify every migration or scheduled task.
 
 Render’s official guides cover [web services](https://render.com/docs/web-services), [environment variables](https://render.com/docs/configure-environment-variables), and [Node versions](https://render.com/docs/node-version).
 
@@ -97,7 +98,7 @@ Render’s official guides cover [web services](https://render.com/docs/web-serv
 | `crm_tasks` | Follow-ups for independent prospects |
 | `youtube_search_presets` | Search phrases and filter settings only |
 | `youtube_api_usage` | This app’s Pacific-day `search.list` count and per-method metadata request counts |
-| `creator_leads`, `creator_evidence`, `creator_contacts` | Private creator follow-up data, user-provided evidence and public contact routes; cascade-delete after 29 days |
+| `creator_leads`, `creator_evidence`, `creator_contacts` | Private creator follow-up data, user-provided evidence and public contact routes; only YouTube profile fields expire after 29 days, child records cascade only on intentional parent/account deletion |
 | `discovery_searches` | User-owned search phrase, filters, timestamps, and completion/error status; no channel response data |
 | `user_daily_usage` | Per-user app search request counts |
 | `admin_audit_logs`, `api_error_logs` | Administrator changes and sanitized server errors |
@@ -113,7 +114,7 @@ The browser calls only the same-origin app server:
 | `POST /api/auth/signup`, `/login`, `/logout`; `GET /api/auth/session` | Creates accounts and manages server-set sessions |
 | `POST /api/youtube/search` | Searches public channels; returns the next page token and app-side usage count |
 | `POST /api/youtube/inspect` | Fetches a channel’s current public fields and up to 10 recent uploads; does not save the response |
-| `GET, POST /api/creator-leads` | List or save account-owned creator follow-ups; saved records expire within 29 days |
+| `GET, POST /api/creator-leads` | List or save account-owned creator follow-ups; YouTube profile fields are refreshed or cleared within 29 days |
 | `PATCH, DELETE /api/creator-leads/:id` | Update or remove an owned creator record |
 | `POST /api/creator-leads/:id/evidence`; `PATCH, DELETE /api/creator-evidence/:id` | Add, manually verify, or remove source-backed evidence notes |
 | `POST /api/creator-leads/:id/contacts`; `PATCH, DELETE /api/creator-contacts/:id` | Add, check, or remove manually collected public contact routes |
@@ -126,7 +127,7 @@ The browser calls only the same-origin app server:
 | `GET, POST /api/search-presets` | List or save reusable query settings |
 | `DELETE /api/search-presets/:id` | Remove a saved query |
 
-Requests are size-limited, rate-limited in the Node process, and write requests check the browser origin. API errors are translated to short messages that do not include the YouTube key.
+Requests are size-limited, rate-limited using shared Supabase counters in production (migration 006), and write requests check the browser origin. API errors are translated to short messages that do not include the YouTube key. In development/test, rate limits use process-local memory.
 
 Row Level Security is enabled and browser roles have no direct table grants. The Node backend uses the server-only Supabase secret key. **YouTube channel data is not written to any of these tables.**
 
@@ -134,7 +135,7 @@ Row Level Security is enabled and browser roles have no direct table grants. The
 
 YouTube’s developer policy prohibits using API data to create new or derived metrics, including calculating a score from likes and views. That conflicts with the requested 100-point opportunity score and calculated engagement/view trends. LeadSense displays original public fields from YouTube but does not score or rank channels using those fields. The search text helper is deterministic, not an AI model. See [YouTube API Services Developer Policies](https://developers.google.com/youtube/terms/developer-policies#E._Refreshing,_Storing,_and_Displaying_API_Data).
 
-The app stores search phrases, filters, app request counts, creator follow-up notes, source URLs, and manually entered contact details. Creator-linked records expire within 29 days. LeadSense does not crawl creator pages or claim that a missing contact entry means no contact method exists.
+The app stores search phrases, filters, app request counts, creator follow-up notes, source URLs, and manually entered contact details. Saved YouTube profile fields clear within 29 days; user-created records remain until deletion. LeadSense does not crawl creator pages or claim that a missing contact entry means no contact method exists.
 
 ## Current MVP boundaries
 
@@ -147,4 +148,4 @@ The app stores search phrases, filters, app request counts, creator follow-up no
 
 ## Tests
 
-Run `npm test` to check discovery, quota boundaries, provenance mapping, API behavior, auth, ownership and frontend contracts. Run `npm run test:browser` for Playwright desktop/mobile workflows (install Chromium with `npx playwright install chromium` the first time).
+Run `npm run check` for syntax validation, `npm test` for discovery, quota boundaries, provenance mapping, API behavior, auth, ownership and frontend contracts, and `npm run test:browser` for Playwright desktop/mobile workflows (install Chromium with `npx playwright install chromium` the first time). See [docs/TESTING.md](docs/TESTING.md), [docs/SECURITY.md](docs/SECURITY.md), [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md), and [docs/AUDIT_CHECKLIST.md](docs/AUDIT_CHECKLIST.md).

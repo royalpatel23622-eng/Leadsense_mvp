@@ -1,4 +1,6 @@
 import http from 'node:http';
+import { createHmac } from 'node:crypto';
+import { isIP } from 'node:net';
 import { readFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -37,6 +39,11 @@ const USER_DAILY_SEARCH_LIMIT = Math.max(1, Math.min(1000, Number(process.env.US
 const USER_DAILY_ANALYSIS_LIMIT = Math.max(1, Math.min(1000, Number(process.env.USER_DAILY_ANALYSIS_LIMIT || 20)));
 const USER_DAILY_API_CALL_LIMIT = Math.max(1, Math.min(10_000, Number(process.env.USER_DAILY_API_CALL_LIMIT || 120)));
 const RATE_LIMIT = Math.max(10, Math.min(1000, Number(process.env.API_RATE_LIMIT_PER_MINUTE || 60)));
+const AUTH_LOGIN_RATE_LIMIT = Math.max(1, Math.min(100, Number(process.env.API_AUTH_LOGIN_RATE_LIMIT || 10)));
+const AUTH_SIGNUP_RATE_LIMIT = Math.max(1, Math.min(100, Number(process.env.API_AUTH_SIGNUP_RATE_LIMIT || 5)));
+const YOUTUBE_SEARCH_RATE_LIMIT = Math.max(1, Math.min(100, Number(process.env.API_YOUTUBE_SEARCH_RATE_LIMIT || 12)));
+const YOUTUBE_INSPECT_RATE_LIMIT = Math.max(1, Math.min(100, Number(process.env.API_YOUTUBE_INSPECT_RATE_LIMIT || 12)));
+const YOUTUBE_OPERATION_TIMEOUT_MS = Math.max(10_000, Math.min(60_000, Number(process.env.YOUTUBE_OPERATION_TIMEOUT_MS || 25_000)));
 const LIMIT_WINDOW_MS = 60_000;
 const ipBuckets = new Map();
 let localSearchDate = '';
@@ -54,7 +61,7 @@ export function securityHeadersFor(req) {
   const headers = { ...securityHeaders };
   let configuredHttps = false;
   try { configuredHttps = new URL(process.env.APP_URL || '').protocol === 'https:'; } catch {}
-  const forwardedProto = process.env.TRUST_PROXY === 'true' && String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase() === 'https';
+  const forwardedProto = Boolean(process.env.TRUSTED_CLIENT_IP_HEADER) && String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase() === 'https';
   if (process.env.NODE_ENV === 'production' && (configuredHttps || forwardedProto || Boolean(req.socket?.encrypted))) {
     headers['Strict-Transport-Security'] = 'max-age=31536000; includeSubDomains';
   }
@@ -72,24 +79,61 @@ function safeError(res, status, code, message) {
 }
 
 export function getClientIp(req) {
-  // Trust forwarding headers only when deployment explicitly sits behind a trusted proxy.
-  const forwarded = process.env.TRUST_PROXY === 'true' ? req.headers['x-forwarded-for'] : null;
-  return (typeof forwarded === 'string' ? forwarded.split(',')[0].trim() : req.socket.remoteAddress) || 'unknown';
+  // Trust one explicitly configured, proxy-overwritten single-IP header. In
+  // particular, do not use the leftmost X-Forwarded-For value on Render: it
+  // can contain a value supplied by the caller before the proxy appends its IP.
+  const socketIp = req.socket?.remoteAddress || 'unknown';
+  const trustedHeader = String(process.env.TRUSTED_CLIENT_IP_HEADER || '').toLowerCase();
+  if (!['cf-connecting-ip','x-real-ip','x-forwarded-for'].includes(trustedHeader)) return socketIp;
+  const forwarded = req.headers[trustedHeader];
+  if (typeof forwarded !== 'string') return socketIp;
+  const candidate = forwarded.trim();
+  return isIP(candidate) ? candidate : socketIp;
 }
 
-function withinRateLimit(req, res) {
+function rateLimitPolicy(pathname) {
+  if (pathname === '/api/auth/login') return { bucket: 'auth-login', limit: AUTH_LOGIN_RATE_LIMIT };
+  if (pathname === '/api/auth/signup') return { bucket: 'auth-signup', limit: AUTH_SIGNUP_RATE_LIMIT };
+  if (pathname === '/api/youtube/search') return { bucket: 'youtube-search', limit: YOUTUBE_SEARCH_RATE_LIMIT };
+  if (pathname === '/api/youtube/inspect') return { bucket: 'youtube-inspect', limit: YOUTUBE_INSPECT_RATE_LIMIT };
+  return { bucket: 'api', limit: RATE_LIMIT };
+}
+
+async function withinRateLimit(req, res, pathname) {
+  if (pathname === '/api/health') return true;
   const now = Date.now();
   const ip = getClientIp(req);
-  const bucket = ipBuckets.get(ip);
+  const policy = rateLimitPolicy(pathname);
+  const key = `${policy.bucket}:${ip}`;
+  if (process.env.NODE_ENV === 'production') {
+    if (!databaseConfigured()) {
+      safeError(res, 503, 'RATE_LIMIT_BACKEND_UNAVAILABLE', 'The shared request protection is not configured. Contact the workspace administrator.');
+      return false;
+    }
+    const digest = createHmac('sha256', SUPABASE_KEY).update(key).digest('hex');
+    try {
+      await dbRequest('rpc/take_api_rate_limit_slot', { method: 'POST', body: { p_bucket_hash: digest, p_limit: policy.limit, p_window_seconds: 60 } });
+      return true;
+    } catch (error) {
+      if (error.code === 'API_RATE_LIMITED') {
+        res.setHeader('Retry-After', '60');
+        safeError(res, 429, 'RATE_LIMITED', 'Too many requests. Wait a minute and try again.');
+        return false;
+      }
+      safeError(res, 503, 'RATE_LIMIT_BACKEND_UNAVAILABLE', 'Request protection is temporarily unavailable. Try again shortly.');
+      return false;
+    }
+  }
+  const bucket = ipBuckets.get(key);
   if (!bucket || now - bucket.startedAt >= LIMIT_WINDOW_MS) {
-    ipBuckets.set(ip, { startedAt: now, count: 1 });
+    ipBuckets.set(key, { startedAt: now, count: 1 });
     if (ipBuckets.size > 5000) {
       for (const [key, value] of ipBuckets) if (now - value.startedAt > LIMIT_WINDOW_MS * 2) ipBuckets.delete(key);
     }
     return true;
   }
   bucket.count += 1;
-  if (bucket.count <= RATE_LIMIT) return true;
+  if (bucket.count <= policy.limit) return true;
   res.setHeader('Retry-After', '60');
   safeError(res, 429, 'RATE_LIMITED', 'Too many requests. Wait a minute and try again.');
   return false;
@@ -99,6 +143,7 @@ function isSameOrigin(req) {
   const origin = req.headers.origin;
   if (!origin) return process.env.NODE_ENV !== 'production';
   try {
+    if (process.env.NODE_ENV === 'production' && !process.env.APP_URL) return false;
     const expected = process.env.APP_URL ? new URL(process.env.APP_URL).origin : `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`;
     return new URL(origin).origin === expected;
   } catch { return false; }
@@ -156,8 +201,8 @@ async function dbRequest(tableOrRpc, { method = 'GET', query = '', body, prefer 
   if (!response.ok) {
     const detail = typeof data?.message === 'string' ? data.message : '';
     const err = new Error(detail || `Database request failed (${response.status}).`);
-    err.code = detail.includes('DAILY_YOUTUBE_QUOTA_LIMIT') ? 'DAILY_YOUTUBE_QUOTA_LIMIT' : detail.includes('USER_DAILY_YOUTUBE_API_LIMIT') ? 'USER_DAILY_YOUTUBE_API_LIMIT' : detail.includes('DAILY_SEARCH_LIMIT') ? 'DAILY_SEARCH_LIMIT' : detail.includes('USER_DAILY_SEARCH_LIMIT') ? 'USER_DAILY_SEARCH_LIMIT' : detail.includes('USER_DAILY_ANALYSIS_LIMIT') ? 'USER_DAILY_ANALYSIS_LIMIT' : 'DATABASE_ERROR';
-    err.status = ['DAILY_YOUTUBE_QUOTA_LIMIT','USER_DAILY_YOUTUBE_API_LIMIT','DAILY_SEARCH_LIMIT','USER_DAILY_SEARCH_LIMIT','USER_DAILY_ANALYSIS_LIMIT'].includes(err.code) ? 429 : response.status >= 500 ? 503 : 400;
+    err.code = detail.includes('API_RATE_LIMITED') ? 'API_RATE_LIMITED' : detail.includes('DAILY_YOUTUBE_QUOTA_LIMIT') ? 'DAILY_YOUTUBE_QUOTA_LIMIT' : detail.includes('USER_DAILY_YOUTUBE_API_LIMIT') ? 'USER_DAILY_YOUTUBE_API_LIMIT' : detail.includes('DAILY_SEARCH_LIMIT') ? 'DAILY_SEARCH_LIMIT' : detail.includes('USER_DAILY_SEARCH_LIMIT') ? 'USER_DAILY_SEARCH_LIMIT' : detail.includes('USER_DAILY_ANALYSIS_LIMIT') ? 'USER_DAILY_ANALYSIS_LIMIT' : 'DATABASE_ERROR';
+    err.status = ['API_RATE_LIMITED','DAILY_YOUTUBE_QUOTA_LIMIT','USER_DAILY_YOUTUBE_API_LIMIT','DAILY_SEARCH_LIMIT','USER_DAILY_SEARCH_LIMIT','USER_DAILY_ANALYSIS_LIMIT'].includes(err.code) ? 429 : response.status >= 500 ? 503 : 400;
     throw err;
   }
   return data;
@@ -294,16 +339,22 @@ function parseGoogleError(status, payload) {
 }
 
 async function googleGet(resource, params, userId, usageState) {
+  const remainingMs = usageState?.deadlineAt ? usageState.deadlineAt - Date.now() : 15_000;
+  if (remainingMs <= 0) throw Object.assign(new Error('The YouTube request took too long. Your current results are shown as partial.'), { status: 504, code: 'YOUTUBE_TIMEOUT' });
   if (resource !== 'search') {
     const method = resource === 'playlistItems' ? 'playlistItems.list' : `${resource}.list`;
     await reserveYouTubeCall(method, userId, usageState);
   }
   const url = new URL(`https://www.googleapis.com/youtube/v3/${resource}`);
   for (const [key, value] of Object.entries(params)) if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, String(value));
-  const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(15_000) });
+  const response = await fetch(url, { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(Math.max(1, Math.min(15_000, remainingMs))) }).catch(error => {
+    if (error?.name === 'TimeoutError' || error?.name === 'AbortError') throw Object.assign(new Error('YouTube did not respond before the request timed out.'), { status: 504, code: 'YOUTUBE_TIMEOUT' });
+    throw error;
+  });
   let payload;
   try { payload = await response.json(); } catch { payload = null; }
   if (!response.ok) throw parseGoogleError(response.status, payload);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload) || (payload.items != null && !Array.isArray(payload.items))) throw Object.assign(new Error('YouTube returned an unreadable response. Try the search again.'), { status: 502, code: 'YOUTUBE_INVALID_RESPONSE' });
   return payload;
 }
 
@@ -334,7 +385,7 @@ async function youtubeSearch(body, userId) {
   const excludedIds = new Set(Array.isArray(body.excludeChannelIds) ? body.excludeChannelIds.filter(id => typeof id === 'string' && id.length > 0 && id.length <= 100).slice(0, 250) : []);
   const foundById = new Map();
   const candidatesById = new Map();
-  const userApiUsage = { calls: 0 };
+  const userApiUsage = { calls: 0, deadlineAt: Date.now() + YOUTUBE_OPERATION_TIMEOUT_MS };
   let lastApiUsage = { calls: 0, limit: SEARCH_LIMIT, source: 'unavailable' };
   let pagesChecked = 0;
   let searchWarning = null;
@@ -361,7 +412,7 @@ async function youtubeSearch(body, userId) {
         fields: 'nextPageToken,items(id(channelId),snippet(title,description,channelId))',
     }, userId, userApiUsage);
     } catch (error) {
-      if (!foundById.size) throw error;
+      if (!foundById.size && !candidatesById.size) throw error;
       interrupted = true;
       searchWarning = error.message || 'YouTube stopped returning more results.';
       break;
@@ -497,7 +548,7 @@ async function youtubeChannelInspection(body, userId) {
   if (!YOUTUBE_KEY) throw Object.assign(new Error('Live YouTube search is not set up yet. Add YOUTUBE_API_KEY on the server, then restart the app.'), { status: 503, code: 'YOUTUBE_NOT_CONFIGURED' });
   const channelId = requireText(body.channelId, 'Channel ID', 64);
   if (!/^UC[a-zA-Z0-9_-]{22}$/.test(channelId)) throw Object.assign(new Error('That YouTube channel ID is not valid. Open a live search result and try again.'), { status: 400, code: 'INVALID_CHANNEL_ID' });
-  const userApiUsage = { calls: 0 };
+  const userApiUsage = { calls: 0, deadlineAt: Date.now() + YOUTUBE_OPERATION_TIMEOUT_MS };
   const channelResponse = await googleGet('channels', { key: YOUTUBE_KEY, part: 'snippet,statistics,contentDetails,topicDetails', id: channelId, fields: 'items(id,snippet(title,description,customUrl,country,publishedAt,thumbnails(default,medium,high)),statistics(subscriberCount,viewCount,videoCount),contentDetails(relatedPlaylists(uploads)),topicDetails(topicCategories))' }, userId, userApiUsage);
   const channel = channelResponse.items?.[0];
   if (!channel) throw Object.assign(new Error('YouTube could not find that public channel.'), { status: 404, code: 'CHANNEL_NOT_FOUND' });
@@ -616,6 +667,24 @@ function creatorLeadInput(body, partial = false) {
   return row;
 }
 
+function creatorLeadUpdateInput(body) {
+  const row = {};
+  if (body.display_label !== undefined) row.display_label = optionalText(body.display_label, 160) || null;
+  if (body.service_category !== undefined) row.service_category = requireText(body.service_category, 'Service category', 100);
+  if (body.stage !== undefined) {
+    if (!['Researching','Contact ready','Contacted','Follow-up','Closed'].includes(body.stage)) throw Object.assign(new Error('Choose a valid creator lead stage.'), { status: 400, code: 'INVALID_STAGE' });
+    row.stage = body.stage;
+  }
+  if (body.notes !== undefined) row.notes = optionalText(body.notes, 5000) || '';
+  if (!Object.keys(row).length) throw Object.assign(new Error('Change a label, service, stage, or note before saving.'), { status: 400, code: 'NO_CHANGES' });
+  return row;
+}
+
+function hideExpiredYoutubeFields(lead, now = Date.now()) {
+  if (!lead?.expires_at || Date.parse(lead.expires_at) > now) return lead;
+  return { ...lead, channel_id: null, channel_url: null, creator_name: null, youtube_data_expired: true };
+}
+
 function creatorEvidenceInput(body, partial = false) {
   const row = {};
   const fields = [
@@ -704,7 +773,7 @@ function savedSearchFilters(input) {
 async function handleApi(req, res, url) {
   const pathname = url.pathname;
   const method = req.method || 'GET';
-  if (!withinRateLimit(req, res)) return;
+  if (!await withinRateLimit(req, res, pathname)) return;
   if (['POST','PATCH','DELETE'].includes(method) && !isSameOrigin(req)) return safeError(res, 403, 'ORIGIN_CHECK_FAILED', 'This request did not come from this app. Refresh the page and try again.');
 
   if (pathname === '/api/auth/signup' && method === 'POST') {
@@ -802,7 +871,7 @@ async function handleApi(req, res, url) {
     const data = await youtubeChannelInspection(body, user.id);
     data.usage = { analysesToday: analysisCalls, dailyLimit: USER_DAILY_ANALYSIS_LIMIT };
     data.youtubeUsage = await currentUsage().catch(() => null);
-    await dbRequest('creator_leads', { method: 'PATCH', query: new URLSearchParams({ user_id: `eq.${user.id}`, channel_id: `eq.${body.channelId}`, select: 'id' }).toString(), body: { expires_at: new Date(Date.now() + 29 * 24 * 60 * 60 * 1000).toISOString() } }).catch(() => {});
+    await dbRequest('creator_leads', { method: 'PATCH', query: new URLSearchParams({ user_id: `eq.${user.id}`, channel_id: `eq.${body.channelId}`, select: 'id' }).toString(), body: { creator_name: data.channel.name, channel_url: data.channel.channelUrl, expires_at: new Date(Date.now() + 29 * 24 * 60 * 60 * 1000).toISOString() } }).catch(() => {});
     return send(res, 200, data);
   }
 
@@ -834,7 +903,26 @@ async function handleApi(req, res, url) {
       return send(res, 200, await dbRequest('api_error_logs', { query: new URLSearchParams({ select: 'id,code,message,path,status,created_at', order: 'created_at.desc', limit: '200' }).toString() }));
     }
     if (pathname === '/api/admin/config' && method === 'GET') {
-      return send(res, 200, { youtube: { configured: Boolean(YOUTUBE_KEY), secret: 'stored in server environment' }, database: { configured: databaseConfigured() }, auth: { configured: Boolean(SUPABASE_AUTH_KEY) }, ai: { configured: Boolean(process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY), status: 'not used until an approved provider is selected' }, limits: { youtubeSearchCallsPerDay: SEARCH_LIMIT, youtubeMetadataUnitsPerDay: OTHER_UNITS_LIMIT, userSearchesPerDay: USER_DAILY_SEARCH_LIMIT, userChannelInspectionsPerDay: USER_DAILY_ANALYSIS_LIMIT, userYoutubeApiCallsPerDay: USER_DAILY_API_CALL_LIMIT, apiRequestsPerMinute: RATE_LIMIT }, subscriptions: { configured: false } });
+      return send(res, 200, {
+        youtube: { configured: Boolean(YOUTUBE_KEY), secret: 'stored in server environment' },
+        database: { configured: databaseConfigured() },
+        auth: { configured: Boolean(SUPABASE_AUTH_KEY) },
+        ai: { configured: Boolean(process.env.OPENAI_API_KEY || process.env.GEMINI_API_KEY), status: 'not used until an approved provider is selected' },
+        limits: {
+          youtubeSearchCallsPerDay: SEARCH_LIMIT,
+          youtubeMetadataUnitsPerDay: OTHER_UNITS_LIMIT,
+          userSearchesPerDay: USER_DAILY_SEARCH_LIMIT,
+          userChannelInspectionsPerDay: USER_DAILY_ANALYSIS_LIMIT,
+          userYoutubeApiCallsPerDay: USER_DAILY_API_CALL_LIMIT,
+          apiRequestsPerMinute: RATE_LIMIT,
+          authLoginsPerMinutePerIp: AUTH_LOGIN_RATE_LIMIT,
+          signupsPerMinutePerIp: AUTH_SIGNUP_RATE_LIMIT,
+          youtubeSearchesPerMinutePerIp: YOUTUBE_SEARCH_RATE_LIMIT,
+          youtubeInspectionsPerMinutePerIp: YOUTUBE_INSPECT_RATE_LIMIT,
+          sharedStore: process.env.NODE_ENV === 'production' && databaseConfigured(),
+        },
+        subscriptions: { configured: false },
+      });
     }
     const userMatch = pathname.match(/^\/api\/admin\/users\/([0-9a-f-]{36})$/i);
     if (userMatch && method === 'PATCH') {
@@ -869,14 +957,15 @@ async function handleApi(req, res, url) {
   if (!actor) return safeError(res, 401, 'AUTH_REQUIRED', 'Sign in to access your workspace.');
 
   if (pathname === '/api/creator-leads' && method === 'GET') {
-    const owner = new URLSearchParams({ user_id: `eq.${actor.id}`, expires_at: `gt.${new Date().toISOString()}`, order: 'updated_at.desc', limit: '250' });
+    const owner = new URLSearchParams({ user_id: `eq.${actor.id}`, order: 'updated_at.desc', limit: '250' });
     const leads = await dbRequest('creator_leads', { query: new URLSearchParams({ select: '*', ...Object.fromEntries(owner) }).toString() });
     if (!leads.length) return send(res, 200, []);
+    const visibleLeads = leads.map(lead => hideExpiredYoutubeFields(lead));
     const [evidenceRows, contactRows] = await Promise.all([
       dbRequest('creator_evidence', { query: new URLSearchParams({ select: '*', user_id: `eq.${actor.id}`, order: 'discovered_at.desc', limit: '1000' }).toString() }),
       dbRequest('creator_contacts', { query: new URLSearchParams({ select: '*', user_id: `eq.${actor.id}`, order: 'created_at.desc', limit: '1000' }).toString() }),
     ]);
-    const enrichments = new Map(leads.map(lead => [lead.id, { ...lead, evidence: [], contacts: [] }]));
+    const enrichments = new Map(visibleLeads.map(lead => [lead.id, { ...lead, evidence: [], contacts: [] }]));
     for (const evidence of evidenceRows) enrichments.get(evidence.creator_lead_id)?.evidence.push(evidence);
     for (const contact of contactRows) enrichments.get(contact.creator_lead_id)?.contacts.push(contact);
     return send(res, 200, [...enrichments.values()].map(lead => ({ ...lead, opportunity: classifyCreatorEvidence(lead.evidence) })));
@@ -884,11 +973,14 @@ async function handleApi(req, res, url) {
   if (pathname === '/api/creator-leads' && method === 'POST') {
     const body = await readJson(req);
     const row = creatorLeadInput(body);
-    row.user_id = actor.id;
-    const existing = await dbRequest('creator_leads', { query: new URLSearchParams({ select: '*', user_id: `eq.${actor.id}`, channel_id: `eq.${row.channel_id}`, limit: '1' }).toString() });
-    if (existing?.length) return send(res, 200, existing[0]);
-    const rows = await dbRequest('creator_leads', { method: 'POST', body: row, prefer: 'return=representation' });
-    return send(res, 201, rows?.[0] || null);
+    const rows = await dbRequest('rpc/save_creator_lead_profile', { method: 'POST', body: {
+      p_user_id: actor.id,
+      p_channel_id: row.channel_id,
+      p_channel_url: row.channel_url,
+      p_creator_name: row.creator_name,
+      p_expires_at: new Date(Date.now() + 29 * 24 * 60 * 60 * 1000).toISOString(),
+    } });
+    return send(res, 200, rows?.[0] || null);
   }
   const creatorLeadMatch = pathname.match(/^\/api\/creator-leads\/([0-9a-f-]{36})$/i);
   if (creatorLeadMatch && !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(creatorLeadMatch[1])) return safeError(res, 400, 'INVALID_ID', 'That creator lead ID is not valid.');
@@ -899,7 +991,7 @@ async function handleApi(req, res, url) {
       await dbRequest('creator_leads', { method: 'DELETE', query: new URLSearchParams({ id: `eq.${lead.id}`, user_id: `eq.${actor.id}` }).toString() });
       return send(res, 200, { deleted: true });
     }
-    const changes = creatorLeadInput(await readJson(req), true);
+    const changes = creatorLeadUpdateInput(await readJson(req));
     changes.updated_at = new Date().toISOString();
     const rows = await dbRequest('creator_leads', { method: 'PATCH', query: new URLSearchParams({ id: `eq.${lead.id}`, user_id: `eq.${actor.id}`, select: '*' }).toString(), body: changes, prefer: 'return=representation' });
     return rows?.length ? send(res, 200, rows[0]) : safeError(res, 404, 'NOT_FOUND', 'That saved creator could not be found.');
