@@ -2,6 +2,8 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 
+process.env.NODE_ENV = 'test';
+process.env.APP_URL = '';
 process.env.YOUTUBE_API_KEY = 'test-youtube-key';
 process.env.SUPABASE_URL = 'https://supabase.test';
 process.env.SUPABASE_SECRET_KEY = 'sb_secret_test';
@@ -65,7 +67,7 @@ after(async () => {
 
 test('creator inspection maps official fields, preserves unavailable values, and labels sample provenance', async () => {
   const response = await new Promise((resolve, reject) => {
-    const request = http.request(`${baseUrl}/api/youtube/inspect`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: 'leadsense_at=valid-token; leadsense_rt=refresh-token' } }, result => {
+    const request = http.request(`${baseUrl}/api/youtube/inspect`, { method: 'POST', headers: { 'content-type': 'application/json', origin: process.env.APP_URL || baseUrl, cookie: 'leadsense_at=valid-token; leadsense_rt=refresh-token' } }, result => {
       const chunks = [];
       result.on('data', chunk => chunks.push(chunk));
       result.on('end', () => resolve({ status: result.statusCode, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) }));

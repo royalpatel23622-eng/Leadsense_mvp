@@ -2,6 +2,8 @@ import test, { before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 
+process.env.NODE_ENV = 'test';
+process.env.APP_URL = '';
 process.env.SUPABASE_URL = 'https://supabase.test';
 process.env.SUPABASE_SECRET_KEY = 'sb_secret_test';
 process.env.SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_test';

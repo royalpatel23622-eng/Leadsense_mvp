@@ -2,6 +2,8 @@ import test, { before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 
+process.env.NODE_ENV = 'test';
+process.env.APP_URL = '';
 process.env.YOUTUBE_API_KEY = 'test-youtube-key';
 process.env.SUPABASE_URL = 'https://supabase.test';
 process.env.SUPABASE_SECRET_KEY = 'sb_secret_test';
@@ -89,7 +91,7 @@ function reset(config) {
 }
 async function postSearch(body) {
   return new Promise((resolve, reject) => {
-    const request = http.request(`${baseUrl}/api/youtube/search`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: 'leadsense_at=valid-token; leadsense_rt=refresh-token' } }, response => {
+    const request = http.request(`${baseUrl}/api/youtube/search`, { method: 'POST', headers: { 'content-type': 'application/json', origin: process.env.APP_URL || baseUrl, cookie: 'leadsense_at=valid-token; leadsense_rt=refresh-token' } }, response => {
       const chunks = [];
       response.on('data', chunk => chunks.push(chunk));
       response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, body: JSON.parse(Buffer.concat(chunks).toString('utf8')) }));

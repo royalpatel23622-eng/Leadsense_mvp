@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAppServer } from '../server.mjs';
 
+process.env.NODE_ENV = 'test';
+process.env.APP_URL = '';
 let server;
 let baseUrl;
 test.before(async () => {
@@ -22,13 +24,13 @@ test('health endpoint is available and sends security headers', async () => {
 });
 
 test('YouTube search requires an authenticated user', async () => {
-  const response = await fetch(`${baseUrl}/api/youtube/search`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ query: 'gaming' }) });
+  const response = await fetch(`${baseUrl}/api/youtube/search`, { method: 'POST', headers: { 'content-type': 'application/json', origin: baseUrl }, body: JSON.stringify({ query: 'gaming' }) });
   assert.equal(response.status, 401);
   assert.equal((await response.json()).error.code, 'AUTH_REQUIRED');
 });
 
 test('natural-language endpoint rejects malformed JSON with a safe client error', async () => {
-  const response = await fetch(`${baseUrl}/api/search/interpret`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{broken' });
+  const response = await fetch(`${baseUrl}/api/search/interpret`, { method: 'POST', headers: { 'content-type': 'application/json', origin: baseUrl }, body: '{broken' });
   assert.equal(response.status, 400);
   assert.equal((await response.json()).error.code, 'INVALID_JSON');
 });
