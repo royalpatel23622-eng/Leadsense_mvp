@@ -22,9 +22,13 @@ services:
         sync: false
       - key: YOUTUBE_DAILY_SEARCH_LIMIT
         value: 40
+      - key: YOUTUBE_DAILY_OTHER_UNITS_LIMIT
+        value: 9000
       - key: API_RATE_LIMIT_PER_MINUTE
         value: 60
       - key: USER_DAILY_SEARCH_LIMIT
         value: 10
       - key: USER_DAILY_ANALYSIS_LIMIT
         value: 20
+      - key: USER_DAILY_API_CALL_LIMIT
+        value: 120

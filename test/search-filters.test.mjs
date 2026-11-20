@@ -16,6 +16,17 @@ test('filters only on the original public subscriber count and preserves unknown
   assert.deepEqual(filterByPublicSubscribers(channels, { min: 5000, max: 100000 }, false).map(x => x.channelId), ['a', 'b']);
 });
 
+test('malformed or negative subscriber counts are treated as unknown, not exact matches', () => {
+  const channels = [
+    { channelId: 'bad', subscribers: 'not-a-number' },
+    { channelId: 'negative', subscribers: -1 },
+    { channelId: 'empty', subscribers: '' },
+    { channelId: 'valid', subscribers: '5000' },
+  ];
+  assert.deepEqual(filterByPublicSubscribers(channels, { min: 5000, max: 100000 }, false).map(x => x.channelId), ['valid']);
+  assert.deepEqual(filterByPublicSubscribers(channels, { min: 5000, max: 100000 }, true).map(x => x.channelId), ['bad', 'negative', 'empty', 'valid']);
+});
+
 test('removes duplicate IDs without changing the first YouTube record', () => {
   const channels = [{ channelId: 'a', name: 'First' }, { channelId: 'a', name: 'Duplicate' }, { channelId: 'b', name: 'Second' }, { name: 'No ID' }];
   assert.deepEqual(dedupeChannelsById(channels), [{ channelId: 'a', name: 'First' }, { channelId: 'b', name: 'Second' }]);
@@ -26,6 +37,12 @@ test('filters creator-declared country separately from the YouTube search region
   assert.deepEqual(filterByDeclaredCountry(channels, ['CA'], false).map(x => x.channelId), ['ca']);
   assert.deepEqual(filterByDeclaredCountry(channels, [], true, true).map(x => x.channelId), ['unknown']);
   assert.deepEqual(filterByDeclaredCountry(channels, [], false).map(x => x.channelId), ['us', 'ca']);
+});
+
+test('normalizes valid country values and treats malformed values as unknown', () => {
+  const channels = [{ channelId: 'lower', countryCode: 'us' }, { channelId: 'bad', countryCode: 'USA' }];
+  assert.deepEqual(filterByDeclaredCountry(channels, ['US'], false).map(x => x.channelId), ['lower']);
+  assert.deepEqual(filterByDeclaredCountry(channels, [], true, true).map(x => x.channelId), ['bad']);
 });
 
 test('explains why a topic candidate missed the selected filters', () => {
