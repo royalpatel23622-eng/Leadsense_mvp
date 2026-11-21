@@ -13,7 +13,7 @@ Auth sessions use HttpOnly cookies, and logout calls Supabase's local logout end
 
 ## HTTP headers and proxy trust
 
-The app sets CSP, frame, content-type, referrer, and permissions policies. The current frontend contains inline scripts/styles and style attributes, so CSP permits `'unsafe-inline'` for scripts and styles. This is a known hardening limitation; removing it requires migrating those inline blocks to external assets or adding nonces/hashes and validating the real app in a browser. Do not tighten it blindly.
+The app sets CSP, frame, content-type, referrer, and permissions policies. The app shell and UI scripts are same-origin external files; `script-src` is limited to `'self'`. Inline style attributes and the locally-created auth animation stylesheet remain allowed under `style-src 'unsafe-inline'`. Playwright checks that required scripts load without CSP console errors at five viewport sizes. Recheck those browser flows before changing the policy further.
 
 HSTS is set only in production when the app has a configured HTTPS `APP_URL`, a direct TLS socket, or a trusted proxy reports HTTPS. The proxy protocol is considered only when `TRUSTED_CLIENT_IP_HEADER` is configured.
 

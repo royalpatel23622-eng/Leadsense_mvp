@@ -22,7 +22,12 @@
   function showGate(message = '') {
     let gate = document.querySelector('#authGate');
     if (!gate) { gate = document.createElement('div'); gate.id = 'authGate'; document.body.append(gate); }
-    gate.innerHTML = `<div class="auth-layout"><aside class="auth-story"><div class="auth-brand"><span class="auth-brandmark"><i></i></span> LeadSense</div><div class="auth-story-copy"><small>Your creator research workspace</small><h2>Find creators.<br><span>Reach out well.</span></h2><p>Search by country and audience size. Review public channel details before you decide who to contact.</p></div><div class="auth-art" aria-hidden="true"><i class="auth-art-ring"></i><i class="auth-art-dot"></i><i class="auth-art-core"></i><i class="auth-art-square"></i></div></aside><main class="auth-form-side"><section class="auth-card"><h1>${signupMode ? 'Create your account' : 'Welcome back'}</h1><p>${signupMode ? 'Create a private workspace for channel research and follow-ups.' : 'Sign in to return to your saved searches and workspace.'}</p><form id="authForm"><label>Email<input name="email" type="email" autocomplete="email" required maxlength="254" placeholder="you@example.com"></label><label>Password<input name="password" type="password" autocomplete="${signupMode ? 'new-password' : 'current-password'}" required minlength="${signupMode ? '12' : '1'}" maxlength="256" placeholder="${signupMode ? 'At least 12 characters' : 'Your password'}"></label><div class="auth-actions"><button class="primary-btn blue" type="submit">${signupMode ? 'Create account' : 'Sign in'}</button></div></form>${message ? `<div class="auth-message ${message.startsWith('Account created') ? 'success' : ''}" role="status">${message}</div>` : ''}<div class="auth-switch">${signupMode ? 'Already registered?' : 'New to LeadSense?'} <button id="authModeSwitch" type="button">${signupMode ? 'Sign in' : 'Create an account'}</button></div><p class="auth-footnote">Sign up using email. Your workspace is private. YouTube audience retention is not available in public channel search.</p></section></main></div>`;
+    gate.innerHTML = `<div class="auth-layout"><aside class="auth-story"><div class="auth-brand"><span class="auth-brandmark"><i></i></span> LeadSense</div><div class="auth-story-copy"><small>Your creator research workspace</small><h2>Find creators.<br><span>Reach out well.</span></h2><p>Search by country and audience size. Review public channel details before you decide who to contact.</p></div><div class="auth-art" aria-hidden="true"><i class="auth-art-ring"></i><i class="auth-art-dot"></i><i class="auth-art-core"></i><i class="auth-art-square"></i></div></aside><main class="auth-form-side"><section class="auth-card"><h1>${signupMode ? 'Create your account' : 'Welcome back'}</h1><p>${signupMode ? 'Create a private workspace for channel research and follow-ups.' : 'Sign in to return to your saved searches and workspace.'}</p><form id="authForm"><label>Email<input name="email" type="email" autocomplete="email" required maxlength="254" placeholder="you@example.com"></label><label>Password<input name="password" type="password" autocomplete="${signupMode ? 'new-password' : 'current-password'}" required minlength="${signupMode ? '12' : '1'}" maxlength="256" placeholder="${signupMode ? 'At least 12 characters' : 'Your password'}"></label><div class="auth-actions"><button class="primary-btn blue" type="submit">${signupMode ? 'Create account' : 'Sign in'}</button></div></form><div id="authMessage" role="status" aria-live="polite"></div><div class="auth-switch">${signupMode ? 'Already registered?' : 'New to LeadSense?'} <button id="authModeSwitch" type="button">${signupMode ? 'Sign in' : 'Create an account'}</button></div><p class="auth-footnote">Sign up using email. Your workspace is private. YouTube audience retention is not available in public channel search.</p></section></main></div>`;
+    const messageNode = gate.querySelector('#authMessage');
+    if (message) {
+      messageNode.className = `auth-message ${message.startsWith('Account created') ? 'success' : ''}`;
+      messageNode.textContent = message;
+    }
     gate.querySelector('#authModeSwitch').onclick = () => { signupMode = !signupMode; showGate(); };
     gate.querySelector('#authForm').onsubmit = async event => {
       event.preventDefault();
@@ -49,7 +54,13 @@
       const actions = document.querySelector('.top-actions');
       if (actions) {
         const tools = document.createElement('div'); tools.className = 'account-tools';
-        tools.innerHTML = `<small>${String(data.user.email || '').replace(/[&<>"']/g, '')}</small><button type="button" id="signOutButton">Sign out</button>`;
+        const accountEmail = document.createElement('small');
+        accountEmail.textContent = String(data.user.email || '');
+        const signOut = document.createElement('button');
+        signOut.type = 'button';
+        signOut.id = 'signOutButton';
+        signOut.textContent = 'Sign out';
+        tools.append(accountEmail, signOut);
         actions.prepend(tools);
         tools.querySelector('#signOutButton').onclick = async () => { await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }); window.location.reload(); };
       }

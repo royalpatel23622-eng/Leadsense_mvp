@@ -45,7 +45,7 @@ The repository declares the MIT License, copyright Matthew Wright, 2020. No refe
 
 LeadSense uses the official API and does not need to reproduce the reference project's proxy or browser-key architecture. YouTube API data must be refreshed or deleted within the applicable 30-day limit, and must be shown as current data rather than silently presented as historical truth. The app does not persist response snapshots; a saved creator's YouTube ID/name/URL are scrubbed after 29 days. User-authored notes and records follow a separate retention policy and remain until user deletion.
 
-YouTube's developer policies restrict creating derived metrics from API data, including custom scores and inferred content categories, unless the developer has the required approval for an applicable analytics use case. Therefore the requested upload-frequency, views-average, retention, thumbnail-quality, editing-quality, and YouTube-derived opportunity scores are not implemented. The product can show the original fields returned by YouTube and user-supplied or independently sourced evidence with clear provenance. AI does not remove these restrictions.
+YouTube's developer policies restrict combining API data with other data and restrict derived metrics. The separate derived-metrics policy describes a path for approved analytics use cases under an applicable policy amendment. LeadSense has no such approval documented. It therefore does not calculate YouTube-based upload-frequency, view-average, retention, thumbnail-quality, editing-quality, engagement, or opportunity scores. CRM evidence entered independently by the user remains separate from YouTube API fields. The product can show the original fields returned by YouTube and user-supplied or independently sourced evidence with clear provenance. AI does not remove these restrictions.
 
 Authoritative references:
 
@@ -64,7 +64,7 @@ Authoritative references:
 4. **Implemented locally; migration verification outstanding:** add user-owned creator leads, manually entered evidence/contact routes, ownership checks, profile actions, and field-only 29-day YouTube data scrubbing. Automatic source crawling and link checking remain out of scope.
 5. **Implemented locally:** show transparent evidence classifications; no YouTube-derived buying-intent claim or score is created.
 6. **Implemented locally:** add saved creator controls to discovery and direct browser coverage for saving a profile, adding evidence/contact records, and checking the responsive workspace.
-7. **Next:** run migrations against staging Supabase and confirm both quota RPCs and `pg_cron` schedule and execute correctly. Re-run all suites and inspect the diff before commit.
+7. **Outstanding external verification:** run migrations against a staging Supabase project and confirm both quota RPCs and `pg_cron` execute correctly. The app reports the exact migration when the quota RPC is missing. Re-run all suites and inspect the diff before any release.
 
 ## Licensing and security note
 

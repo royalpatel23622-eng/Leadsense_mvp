@@ -67,6 +67,18 @@ The expected objects are present and both scheduled jobs appear. These checks co
 - If a cron job was created before the failure, inspect `cron.job` and remove or update only the named LeadSense job after confirming it is the affected one.
 - For production data or uncertain partial state, stop and use a staging clone or ask a database administrator to review the project.
 
+## YouTube quota RPC missing
+
+If discovery reports `QUOTA_MIGRATION_REQUIRED` or Supabase says it cannot find `public.take_user_youtube_api_slot(p_daily_limit, p_user_id)` in the schema cache, the database does not currently expose the quota functions expected by this version of the app. Do not disable the quota guard or call YouTube without reserving quota.
+
+1. Open **Supabase → SQL Editor** for the same project configured in the app.
+2. Check whether migration `003_youtube_quota_accounting.sql` has been applied. For a new database, apply it after `002_accounts_search_history.sql`; for a database already migrated, confirm it has the quota columns and both functions listed in the verification section above.
+3. If it is missing, review the complete file in this repository, then run it in SQL Editor. Do not paste a similarly named or partial migration.
+4. In SQL Editor, refresh the schema cache if Supabase still reports a missing function, then retry discovery.
+5. Verify the functions with `to_regprocedure('public.take_user_youtube_api_slot(uuid,integer)')` and `to_regprocedure('public.take_youtube_api_slot(text,integer,integer)')`.
+
+The app turns the raw PostgREST schema-cache message into this migration-specific guidance. It does not silently skip the atomic user/app quota reservation. The local mocked test verifies this error path; only the configured Supabase project can confirm its migration state.
+
 ## Ownership and retention
 
 Tables are accessed by the Node server using its server-only Supabase key. Browser roles do not receive that key. User-owned rows are scoped by the authenticated user ID in API queries and by ownership constraints in creator child records. The `creator_leads` foreign keys intentionally cascade evidence and contact rows only when the parent lead itself is explicitly deleted (or its owning account is deleted). Expiry scrubs only fields sourced from YouTube.

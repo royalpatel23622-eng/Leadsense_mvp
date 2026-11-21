@@ -125,7 +125,20 @@ test('creator leads keep source-backed evidence and public contacts separate and
   assert.equal(verified.status, 200);
   list = await call('/api/creator-leads');
   assert.equal(list.body[0].opportunity.classification, 'explicit_opportunity');
-  assert.match(list.body[0].opportunity.reason, /user marked/i);
+  assert.match(list.body[0].opportunity.reason, /manually checked/i);
+  assert.equal(list.body[0].opportunity.evidenceStates[0].status, 'fresh');
+  const editedEvidence = await call(`/api/creator-evidence/${evidenceId}`, { method: 'PATCH', body: { excerpt: 'The original request has changed.' } });
+  assert.equal(editedEvidence.body.verification_status, 'unverified');
+  assert.equal(editedEvidence.body.last_checked_at, null);
+  list = await call('/api/creator-leads');
+  assert.equal(list.body[0].opportunity.classification, 'insufficient_evidence');
+  const checkedAgain = await call(`/api/creator-evidence/${evidenceId}`, { method: 'PATCH', body: { verification_status: 'manually_verified' } });
+  assert.equal(checkedAgain.body.verification_status, 'manually_verified');
+  const checkedContact = await call(`/api/creator-contacts/${contactId}`, { method: 'PATCH', body: { verification_status: 'link_checked' } });
+  assert.equal(checkedContact.body.verification_status, 'link_checked');
+  const editedContact = await call(`/api/creator-contacts/${contactId}`, { method: 'PATCH', body: { contact_value: 'new-work@creator.example' } });
+  assert.equal(editedContact.body.verification_status, 'unverified');
+  assert.equal(editedContact.body.last_checked_at, null);
 });
 
 test('creator evidence and contact inputs reject missing provenance and fabricated email formats', async () => {
@@ -150,7 +163,8 @@ test('creator workspace and child records are isolated by account ownership', as
   assert.equal((await call(`/api/creator-evidence/${ownEvidence.body.id}`, { user: 'user-b-token', method: 'PATCH', body: { verification_status: 'manually_verified' } })).status, 404);
   assert.equal((await call(`/api/creator-leads/${leadId}/contacts`, { user: 'user-b-token', method: 'POST', body: { contact_type: 'website', contact_value: 'https://creator.example', source_url: 'https://creator.example' } })).status, 404);
   const ownList = await call('/api/creator-leads');
-  assert.equal(ownList.body[0].opportunity.classification, 'context_only');
+  assert.equal(ownList.body[0].opportunity.classification, 'insufficient_evidence');
+  assert.match(ownList.body[0].opportunity.reason, /not manually checked/i);
 });
 
 test('deleting a saved creator removes its linked evidence and contacts', async () => {

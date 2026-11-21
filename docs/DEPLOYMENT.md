@@ -1,6 +1,6 @@
 # Deployment guide
 
-LeadSense is a Node.js web service with a static HTML/JavaScript frontend. Render deployment is configured in `render.yaml`. GitHub pushes do not deploy automatically because `autoDeploy` is disabled; review and deploy from Render when you are ready. This guide does not claim that the current Supabase or Render services have been live-verified.
+LeadSense is a Node.js web service with a static HTML/JavaScript frontend. Render deployment is configured in `render.yaml`. `render.yaml` sets `autoDeploy: true`, so eligible pushes to the connected branch can trigger a deployment. Review the diff and CI before pushing. This guide does not claim that the current Supabase or Render services have been live-verified.
 
 ## Required services
 
@@ -16,7 +16,7 @@ LeadSense is a Node.js web service with a static HTML/JavaScript frontend. Rende
 4. Set `APP_URL` to the exact public HTTPS origin, without a path, for example `https://your-service.onrender.com`.
 5. Keep `TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip` only when deployed behind Render's documented proxy path. Do not trust arbitrary `X-Forwarded-For` values.
 6. Run the build command `npm ci && npm run check && npm test`. The service starts with `npm start` and binds to Render's supplied `PORT`.
-7. Deploy manually from Render after reviewing the diff. Then open `/api/health` and confirm `ok`, database connectivity, and YouTube configuration as applicable.
+7. After Render finishes the deploy triggered by an eligible push, open `/api/health` and confirm `ok`, database connectivity, and YouTube configuration as applicable.
 8. Test signup, login, logout, search, saved creator notes, and phone-sized layouts on the deployed service. Use a staging Supabase project for database changes first.
 
 ## Environment variables

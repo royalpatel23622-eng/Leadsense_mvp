@@ -18,7 +18,7 @@ The backend is a dependency-free Node.js web server. It serves the existing fron
 - **YouTube data retention:** search and inspection responses are returned to the browser and not cached. A saved creator workspace stores channel ID/name/URL for follow-up and clears those YouTube-sourced fields after 29 days. It does not save YouTube statistics or video metadata snapshots. User-authored records are retained until the user deletes them.
 - **Quota accounting:** every YouTube API call reserves an atomic per-user slot and an app-wide slot before calling YouTube. `search.list` has its own counter; metadata methods are counted in a separate unit bucket and by method. Counters roll over at midnight Pacific Time. These app counters cannot see API requests made outside LeadSense.
 - **Independent CRM:** add and update business prospects, change stages, make follow-ups, mark tasks done, and export prospects to CSV. These routes never accept YouTube channel IDs or API responses.
-- **Local mode:** without Supabase, account-backed features are unavailable. Any locally entered CRM items are labeled as browser-only and are not pre-filled fake leads. Without a YouTube key, live search shows a clear setup message.
+- **Local mode:** without Supabase, account-backed features are unavailable. CRM edits are unavailable and are not saved until Supabase is connected. Without a YouTube key, live search shows a clear setup message.
 - **Deploy files:** `render.yaml` describes a Render web service. See the migration and deployment guides before setting up a live service.
 
 ## Local setup
@@ -56,7 +56,7 @@ Requirements: Node.js 22 or newer. The server has no runtime dependencies; Playw
 
    Sign out and back in. Admin access is checked on the server. To keep old shared CRM records, run the three backfill statements at the end of the migration file after setting the first admin.
 
-If you do not have a Supabase project yet, you can still run the app in demo mode. Prospect and task edits then stay in your browser’s local storage and are not shared with the server.
+Supabase is required for accounts, saved searches, CRM records, tasks, and private creator notes. Without a database, the app shows setup status and does not pretend that changes were saved. Live YouTube discovery also requires a server-side API key.
 
 ## Add YouTube search later
 
@@ -74,7 +74,7 @@ The app does not scrape YouTube pages, collect email addresses or phone numbers,
 
 1. In Supabase SQL Editor, apply `schema.sql` for a new project, followed by migrations `002`, `003`, `004`, `005`, and `006` in order. For an existing project already at migration 004, apply 005 and 006. Enable `pg_cron` before migrations 004/005/006 if Supabase has not enabled it. Migration 005 replaces migration 004's old cascading-delete cleanup. Follow [docs/DATABASE_MIGRATIONS.md](docs/DATABASE_MIGRATIONS.md) and verify the objects before using production data.
 2. Push this project folder to the intended GitHub repository and confirm CI passes.
-3. In Render, create or open the service from **New → Blueprint** and connect the repository. Render reads `render.yaml`; automatic deploy on GitHub push is disabled.
+3. In Render, create or open the service from **New → Blueprint** and connect the repository. Render reads `render.yaml`; automatic deploy on GitHub push is enabled for the connected branch (`autoDeploy: true`).
 4. Add these environment values in the Render service settings:
 
    - `SUPABASE_URL` — your project URL
@@ -133,7 +133,7 @@ Row Level Security is enabled and browser roles have no direct table grants. The
 
 ## YouTube data limits and product boundaries
 
-YouTube’s developer policy prohibits using API data to create new or derived metrics, including calculating a score from likes and views. That conflicts with the requested 100-point opportunity score and calculated engagement/view trends. LeadSense displays original public fields from YouTube but does not score or rank channels using those fields. The search text helper is deterministic, not an AI model. See [YouTube API Services Developer Policies](https://developers.google.com/youtube/terms/developer-policies#E._Refreshing,_Storing,_and_Displaying_API_Data).
+The developer policies restrict mixing YouTube API data with other data and derived metrics. The derived-metrics policy provides a path for approved analytics uses under an applicable amendment. LeadSense has no such approval documented; it therefore shows original public API fields and does not calculate YouTube-based scores or trends. Independently gathered CRM evidence remains separate. The search text helper is deterministic, not an AI model. See [YouTube API Services Developer Policies](https://developers.google.com/youtube/terms/developer-policies), the [derived-metrics policy](https://developers.google.com/youtube/terms/derived-metrics-policy), and [quota costs](https://developers.google.com/youtube/v3/determine_quota_cost). Additional metrics require the applicable analytics use case and policy amendment; LeadSense has no approval documented. Until then, it uses original API fields only and keeps independently gathered CRM evidence separate.
 
 The app stores search phrases, filters, app request counts, creator follow-up notes, source URLs, and manually entered contact details. Saved YouTube profile fields clear within 29 days; user-created records remain until deletion. LeadSense does not crawl creator pages or claim that a missing contact entry means no contact method exists.
 
@@ -144,7 +144,7 @@ The app stores search phrases, filters, app request counts, creator follow-up no
 - YouTube-derived opportunity scores are intentionally not implemented because of the developer policy restriction above.
 - The admin area shows actual application records. Channel totals, analyzed leads, revenue, and Google Cloud quota are shown as unavailable where this app does not collect those values.
 - App-side limits reduce bursts but do not report Google Cloud’s complete quota use.
-- Real channel data stays in memory and in the browser response only. Sample records are clearly marked as examples.
+- YouTube response data stays in memory and in the browser response only. The app does not seed fictional channels, prospects, or tasks into a real account.
 
 ## Tests
 

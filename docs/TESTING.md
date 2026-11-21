@@ -30,3 +30,6 @@ Automated tests cannot prove these external behaviors. On a staging Supabase pro
 - Send repeated requests from two app instances and verify the shared limiter returns 429 consistently.
 - Check CSP console errors and all primary flows in Chromium at 1440, 1280, 768, 390, and 360 CSS pixels.
 - Run one authorized YouTube search and inspection, check the UI's partial/quota messaging, and verify app counters against Cloud Console. Do not infer Google's full quota use from the app counter.
+
+
+Recent local coverage includes creator evidence freshness and classification, stale-source rechecks, resetting verification after source edits, missing Supabase quota-RPC diagnostics and failed search-history status, CSP script loading, and layout overflow at 360, 390, 768, 1280, and 1440 pixels. These tests use mocked services; they do not verify a live Supabase project or a deployed Render service.

@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node server.mjs",
     "dev": "node --watch server.mjs",
-    "check": "node --check server.mjs && node --check lib/creator-provenance.mjs && node --check lib/search-filters.mjs && node --check lib/search-query.mjs && node --check lib/youtube-metadata.mjs && node --check outputs/auth.js && node --check outputs/channel-investigation.js && node --check outputs/dashboard.js && node --check outputs/discovery-enhancements.js && node --check outputs/product-experience.js && node --check outputs/search-history.js && node --check outputs/admin-panel.js",
+    "check": "node --check server.mjs && node --check lib/creator-evidence.mjs && node --check outputs/app-1.js && node --check outputs/app-2.js && node --check lib/creator-provenance.mjs && node --check lib/search-filters.mjs && node --check lib/search-query.mjs && node --check lib/youtube-metadata.mjs && node --check outputs/auth.js && node --check outputs/channel-investigation.js && node --check outputs/dashboard.js && node --check outputs/discovery-enhancements.js && node --check outputs/product-experience.js && node --check outputs/search-history.js && node --check outputs/admin-panel.js",
     "test": "node --test",
     "test:browser": "playwright test"
   },

@@ -32,6 +32,7 @@ globalThis.fetch = async (input, init = {}) => {
     if (table === 'app_users') return jsonResponse([{ id: userId, email: 'test@example.com', role: 'user', status: 'active', plan: 'free', search_limit_override: null }]);
     if (table === 'rpc/take_user_search_slot') return jsonResponse(1);
     if (table === 'rpc/take_user_youtube_api_slot') {
+      if (scenario.missingUserQuotaFunction) return jsonResponse({ code: 'PGRST202', message: 'Could not find the function public.take_user_youtube_api_slot(p_daily_limit, p_user_id) in the schema cache' }, 404);
       scenario.userApiCalls += 1;
       if (scenario.userApiLimit != null && scenario.userApiCalls > scenario.userApiLimit) return jsonResponse({ message: 'USER_DAILY_YOUTUBE_API_LIMIT reached' }, 429);
       return jsonResponse(scenario.userApiCalls);
@@ -121,6 +122,16 @@ test('continues across candidate pages until requested exact count, preserving f
   assert.equal(response.body.userApiUsage.calls, 4);
   assert.equal(response.body.userApiUsage.limit, 120);
   assert.equal(scenario.historyStatuses.at(-1), 'completed');
+});
+
+test('reports the exact Supabase quota migration when its RPC is missing and records the search as failed', async () => {
+  reset({ missingUserQuotaFunction: true, pages: { first: { items: ['one'] } }, channelData: { one: channel('one', 1000) } });
+  const response = await postSearch({ query: 'design', requestedCount: 1 });
+  assert.equal(response.status, 503);
+  assert.equal(response.body.error.code, 'QUOTA_MIGRATION_REQUIRED');
+  assert.match(response.body.error.message, /migrations\/003_youtube_quota_accounting\.sql/);
+  assert.equal(scenario.searchReservations, 0);
+  assert.equal(scenario.historyStatuses.at(-1), 'failed');
 });
 
 test('treats hidden subscriber and country values as unknown according to selected filters', async () => {

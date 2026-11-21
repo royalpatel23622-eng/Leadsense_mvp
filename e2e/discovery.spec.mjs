@@ -10,6 +10,47 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { if (server) await new Promise(resolve => server.close(resolve)); });
 
+test('same-origin CSP assets load and the login view fits common phone, tablet, and desktop widths', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/session') return route.fulfill({ json: { authenticated: false } });
+    if (path === '/api/health') return route.fulfill({ json: { ok: true, database: 'not_configured', youtube: 'not_configured' } });
+    return route.fulfill({ json: [] });
+  });
+  const cspErrors = [];
+  page.on('console', message => { if (message.type() === 'error' && /content security policy|refused to/i.test(message.text())) cspErrors.push(message.text()); });
+  const response = await page.goto(baseUrl);
+  const policy = response.headers()['content-security-policy'];
+  expect(policy).toContain("script-src 'self'");
+  expect(policy).not.toContain("script-src 'self' 'unsafe-inline'");
+  await expect(page.locator('#authGate')).toBeVisible();
+  await expect(page.locator('script:not([src])')).toHaveCount(0);
+  await expect(page.locator('#authGate h1')).toHaveText('Welcome back');
+  for (const [width, height] of [[360,800],[390,844],[768,1024],[1280,800],[1440,900]]) {
+    await page.setViewportSize({ width, height });
+    await expect(page.locator('#authGate')).toBeVisible();
+    const dimensions = await page.evaluate(() => ({ viewport: window.innerWidth, page: document.documentElement.scrollWidth }));
+    expect(dimensions.page, `horizontal overflow at ${width}px`).toBeLessThanOrEqual(dimensions.viewport + 1);
+  }
+  expect(cspErrors).toEqual([]);
+});
+
+test('discovery explains how to fix a missing Supabase quota function', async ({ page }) => {
+  await page.route('**/api/**', async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/auth/session') return route.fulfill({ json: { authenticated: true, user: { id: 'user-1', email: 'test@example.com', role: 'user' } } });
+    if (path === '/api/health') return route.fulfill({ json: { ok: true, database: 'connected', youtube: 'configured' } });
+    if (path === '/api/youtube/search') return route.fulfill({ status: 503, json: { error: { code: 'QUOTA_MIGRATION_REQUIRED', message: 'Supabase is missing the YouTube quota function. Apply migrations/003_youtube_quota_accounting.sql in the Supabase SQL Editor, then retry the search.' } } });
+    return route.fulfill({ json: [] });
+  });
+  await page.goto(baseUrl);
+  await page.locator('[data-view="discover"]').first().click();
+  await page.locator('#creatorQuery').fill('design creators');
+  await page.locator('#searchBtn').click();
+  await expect(page.locator('#noResults')).toContainText('Apply migrations/003_youtube_quota_accounting.sql');
+  await expect(page.locator('#creatorGrid')).toBeEmpty();
+});
+
 test('discovery form submits exact filters, separates related candidates, and preserves them on Load More', async ({ page }) => {
   const submissions = [];
   await page.route('**/api/**', async route => {

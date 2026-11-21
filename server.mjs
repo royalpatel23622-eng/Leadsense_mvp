@@ -10,6 +10,7 @@ import { interpretSearchQuery } from './lib/search-query.mjs';
 import { dedupeChannelsById, describeFilterMisses, filterByDeclaredCountry, filterByPublicSubscribers, normalizeSubscriberRange } from './lib/search-filters.mjs';
 import { isShortDurationCandidate } from './lib/youtube-metadata.mjs';
 import { attachProvenance } from './lib/creator-provenance.mjs';
+import { classifyCreatorEvidence } from './lib/creator-evidence.mjs';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = path.join(ROOT, 'outputs');
@@ -54,7 +55,7 @@ const securityHeaders = {
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com https://lh3.googleusercontent.com https://developers.google.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://yt3.ggpht.com https://yt3.googleusercontent.com https://lh3.googleusercontent.com https://developers.google.com; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
 };
 
 export function securityHeadersFor(req) {
@@ -200,6 +201,9 @@ async function dbRequest(tableOrRpc, { method = 'GET', query = '', body, prefer 
   if (text) { try { data = JSON.parse(text); } catch { data = null; } }
   if (!response.ok) {
     const detail = typeof data?.message === 'string' ? data.message : '';
+    if (tableOrRpc === 'rpc/take_user_youtube_api_slot' && (data?.code === 'PGRST202' || /could not find the function .*take_user_youtube_api_slot.*schema cache/i.test(detail))) {
+      throw Object.assign(new Error('Supabase is missing the YouTube quota function. Apply migrations/003_youtube_quota_accounting.sql in the Supabase SQL Editor, then retry the search.'), { status: 503, code: 'QUOTA_MIGRATION_REQUIRED' });
+    }
     const err = new Error(detail || `Database request failed (${response.status}).`);
     err.code = detail.includes('API_RATE_LIMITED') ? 'API_RATE_LIMITED' : detail.includes('DAILY_YOUTUBE_QUOTA_LIMIT') ? 'DAILY_YOUTUBE_QUOTA_LIMIT' : detail.includes('USER_DAILY_YOUTUBE_API_LIMIT') ? 'USER_DAILY_YOUTUBE_API_LIMIT' : detail.includes('DAILY_SEARCH_LIMIT') ? 'DAILY_SEARCH_LIMIT' : detail.includes('USER_DAILY_SEARCH_LIMIT') ? 'USER_DAILY_SEARCH_LIMIT' : detail.includes('USER_DAILY_ANALYSIS_LIMIT') ? 'USER_DAILY_ANALYSIS_LIMIT' : 'DATABASE_ERROR';
     err.status = ['API_RATE_LIMITED','DAILY_YOUTUBE_QUOTA_LIMIT','USER_DAILY_YOUTUBE_API_LIMIT','DAILY_SEARCH_LIMIT','USER_DAILY_SEARCH_LIMIT','USER_DAILY_ANALYSIS_LIMIT'].includes(err.code) ? 429 : response.status >= 500 ? 503 : 400;
@@ -732,14 +736,6 @@ function creatorContactInput(body, partial = false) {
   return row;
 }
 
-function classifyCreatorEvidence(evidence) {
-  const verified = evidence.filter(item => item.verification_status === 'manually_verified');
-  if (verified.some(item => item.strength === 'strong' && ['public_request','creator_statement','hiring_post','service_request'].includes(item.evidence_type))) return { classification: 'explicit_opportunity', reason: 'A user marked a source-backed explicit service request as manually verified.', evidenceCount: verified.length };
-  if (verified.some(item => item.strength === 'moderate' && item.evidence_type !== 'context_note')) return { classification: 'potential_opportunity', reason: 'A user marked relevant public evidence as manually verified. Review the original source.', evidenceCount: verified.length };
-  if (evidence.some(item => item.strength === 'weak' || item.evidence_type === 'context_note')) return { classification: 'context_only', reason: 'Only weak or contextual notes are recorded. They do not show buying intent.', evidenceCount: evidence.length };
-  return { classification: 'insufficient_evidence', reason: 'No verified service-need evidence found.', evidenceCount: evidence.length };
-}
-
 async function ownedCreatorLead(leadId, userId) {
   const rows = await dbRequest('creator_leads', { query: new URLSearchParams({ select: 'id,channel_id,creator_name,user_id', id: `eq.${leadId}`, user_id: `eq.${userId}`, limit: '1' }).toString() });
   return rows?.[0] || null;
@@ -1013,7 +1009,12 @@ async function handleApi(req, res, url) {
       await dbRequest('creator_evidence', { method: 'DELETE', query: new URLSearchParams({ id: `eq.${existing[0].id}`, user_id: `eq.${actor.id}` }).toString() });
       return send(res, 200, { deleted: true });
     }
-    const changes = creatorEvidenceInput(await readJson(req), true);
+    const body = await readJson(req);
+    const changes = creatorEvidenceInput(body, true);
+    if (body.verification_status === undefined && ['source_url','excerpt','published_at','evidence_type','strength','service_category'].some(field => body[field] !== undefined)) {
+      changes.verification_status = 'unverified';
+      changes.last_checked_at = null;
+    }
     const rows = await dbRequest('creator_evidence', { method: 'PATCH', query: new URLSearchParams({ id: `eq.${existing[0].id}`, user_id: `eq.${actor.id}`, select: '*' }).toString(), body: changes, prefer: 'return=representation' });
     return rows?.length ? send(res, 200, rows[0]) : safeError(res, 404, 'NOT_FOUND', 'That evidence record could not be found.');
   }
@@ -1034,7 +1035,12 @@ async function handleApi(req, res, url) {
       await dbRequest('creator_contacts', { method: 'DELETE', query: new URLSearchParams({ id: `eq.${existing[0].id}`, user_id: `eq.${actor.id}` }).toString() });
       return send(res, 200, { deleted: true });
     }
-    const changes = creatorContactInput({ ...existing[0], ...await readJson(req) }, true);
+    const body = await readJson(req);
+    const changes = creatorContactInput({ ...existing[0], ...body }, true);
+    if (body.verification_status === undefined && ['contact_type','contact_value','source_url'].some(field => body[field] !== undefined)) {
+      changes.verification_status = 'unverified';
+      changes.last_checked_at = null;
+    }
     const rows = await dbRequest('creator_contacts', { method: 'PATCH', query: new URLSearchParams({ id: `eq.${existing[0].id}`, user_id: `eq.${actor.id}`, select: '*' }).toString(), body: changes, prefer: 'return=representation' });
     return rows?.length ? send(res, 200, rows[0]) : safeError(res, 404, 'NOT_FOUND', 'That contact record could not be found.');
   }

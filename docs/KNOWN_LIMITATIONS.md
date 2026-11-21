@@ -15,5 +15,5 @@
 - The rule-based query helper is not an AI model. Billing, subscriptions, email sending, and notifications are not implemented.
 - Discovery responses are not cached or stored as API snapshots. Saved creator YouTube ID, URL, and name are scrubbed after 29 days; user-authored labels, notes, evidence, contacts, and stages stay until the user deletes the lead or account.
 - Search and quota safeguards are app-side limits, not Google's complete quota usage. Each search results page is a separate request; `search.list` has a separate daily quota bucket. Check the current Google documentation and Cloud Console before setting limits.
-- CSP currently allows inline scripts/styles because the legacy frontend uses inline blocks and attributes. This keeps current interactions working but is a security hardening item before a stricter CSP.
+- The app shell and UI scripts load from same-origin files, and CSP limits scripts to `'self'`. Inline style attributes remain allowed for existing component styling. Auth animation CSS is injected locally by the auth module, so `style-src` still allows inline styles.
 - Render free instances may sleep while idle. The first request after sleep can take longer.
