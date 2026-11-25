@@ -20,8 +20,9 @@ For a new project, apply:
 4. `migrations/004_creator_workspace.sql`
 5. `migrations/005_creator_workspace_retention.sql`
 6. `migrations/006_shared_api_rate_limits.sql`
+7. `migrations/007_restrict_profile_trigger_rpc.sql`
 
-For an existing project that has already applied migrations 002–004, apply only 005 and 006. Do not rerun earlier files to try to repair a failed migration.
+For an existing project that has already applied migrations 002–006, apply only 007. For a project partway through the order, continue with the first missing migration. Do not rerun earlier files to try to repair a failed migration.
 
 Migrations 004 and 005 schedule `pg_cron` jobs. Supabase must support and have the `pg_cron` extension enabled. If the extension or the `cron` schema is unavailable, stop and enable the supported extension in the Supabase dashboard before retrying the failed migration.
 
@@ -58,6 +59,22 @@ order by jobname;
 ```
 
 The expected objects are present and both scheduled jobs appear. These checks confirm database definitions, not that the jobs have already run. The app's `/api/health` endpoint checks connectivity only; it does not prove every migration or cron job is correct.
+
+Verify the profile trigger remains attached and the trigger function is unavailable to API roles:
+
+```sql
+select exists (
+  select 1 from pg_trigger
+  where tgname = 'create_app_user_profile_after_signup'
+    and not tgisinternal
+) as signup_profile_trigger_exists;
+
+select has_function_privilege('anon', 'public.create_app_user_profile()', 'EXECUTE') as anon_can_call,
+       has_function_privilege('authenticated', 'public.create_app_user_profile()', 'EXECUTE') as signed_in_can_call,
+       has_function_privilege('service_role', 'public.create_app_user_profile()', 'EXECUTE') as service_role_can_call;
+```
+
+The trigger should exist and each `*_can_call` value should be `false`. Migration 007 only revokes function execution; it does not remove the signup trigger or alter account records.
 
 ## If a migration fails
 

@@ -32,6 +32,11 @@ create trigger create_app_user_profile_after_signup
 after insert or update of email on auth.users
 for each row execute function public.create_app_user_profile();
 
+-- This function is only an internal trigger. Do not expose its SECURITY DEFINER
+-- privileges as a callable Supabase Data API RPC.
+revoke execute on function public.create_app_user_profile() from public, anon, authenticated, service_role;
+notify pgrst, 'reload schema';
+
 -- Add an owner to the existing shared CRM tables before enabling account access.
 alter table public.external_prospects add column if not exists user_id uuid references public.app_users(id) on delete cascade;
 alter table public.crm_tasks add column if not exists user_id uuid references public.app_users(id) on delete cascade;

@@ -5,6 +5,7 @@
 - Supabase secret/service-role and YouTube API keys are read only by `server.mjs`; do not expose them in browser assets.
 - Database tables are used through the server. RLS is enabled, browser roles have no direct grants to server-owned workspace tables, and server queries scope user records by authenticated ID.
 - Creator evidence and contact routes are user-entered. LeadSense does not crawl or verify external pages.
+- The `create_app_user_profile()` SECURITY DEFINER routine is an internal `auth.users` trigger only; migration 007 revokes execute rights from Supabase API roles while keeping the trigger.
 - API errors are returned as short messages; secrets and session tokens must not be added to logs.
 
 ## Sessions and writes

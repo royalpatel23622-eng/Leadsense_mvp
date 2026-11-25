@@ -20,13 +20,14 @@ The backend is a dependency-free Node.js web server. It serves the existing fron
 - **Independent CRM:** add and update business prospects, change stages, make follow-ups, mark tasks done, and export prospects to CSV. These routes never accept YouTube channel IDs or API responses.
 - **Local mode:** without Supabase, account-backed features are unavailable. CRM edits are unavailable and are not saved until Supabase is connected. Without a YouTube key, live search shows a clear setup message.
 - **Deploy files:** `render.yaml` describes a Render web service. See the migration and deployment guides before setting up a live service.
+- **Future website intelligence:** this is not implemented. The proposed module boundary, evidence format, SSRF protections, and integration path are documented in [docs/website-intelligence-architecture.md](docs/website-intelligence-architecture.md).
 
 ## Local setup
 
 Requirements: Node.js 22 or newer. The server has no runtime dependencies; Playwright is a development dependency for browser tests.
 
 1. Copy `.env.example` to `.env`.
-2. Create a Supabase project and follow [docs/DATABASE_MIGRATIONS.md](docs/DATABASE_MIGRATIONS.md) for the exact migration order and verification queries. For a new database this includes `schema.sql` and migrations 002–006. Make sure `pg_cron` is enabled; migration 005 protects user-created workspace data from the earlier cascading cleanup.
+2. Create a Supabase project and follow [docs/DATABASE_MIGRATIONS.md](docs/DATABASE_MIGRATIONS.md) for the exact migration order and verification queries. For a new database this includes `schema.sql` and migrations 002–007. Make sure `pg_cron` is enabled; migration 005 protects user-created workspace data from the earlier cascading cleanup.
 3. In Supabase **Settings → API Keys**, copy the project URL and a server-only **Secret key** into `.env`:
 
    ```env
@@ -72,7 +73,7 @@ The app does not scrape YouTube pages, collect email addresses or phone numbers,
 
 ## Deploy to Render
 
-1. In Supabase SQL Editor, apply `schema.sql` for a new project, followed by migrations `002`, `003`, `004`, `005`, and `006` in order. For an existing project already at migration 004, apply 005 and 006. Enable `pg_cron` before migrations 004/005/006 if Supabase has not enabled it. Migration 005 replaces migration 004's old cascading-delete cleanup. Follow [docs/DATABASE_MIGRATIONS.md](docs/DATABASE_MIGRATIONS.md) and verify the objects before using production data.
+1. In Supabase SQL Editor, apply `schema.sql` for a new project, followed by migrations `002` through `007` in order. For an existing project already at migration 006, apply only 007. Enable `pg_cron` before migrations 004/005/006 if Supabase has not enabled it. Migration 005 replaces migration 004's old cascading-delete cleanup. Follow [docs/DATABASE_MIGRATIONS.md](docs/DATABASE_MIGRATIONS.md) and verify the objects before using production data.
 2. Push this project folder to the intended GitHub repository and confirm CI passes.
 3. In Render, create or open the service from **New → Blueprint** and connect the repository. Render reads `render.yaml`; automatic deploy on GitHub push is enabled for the connected branch (`autoDeploy: true`).
 4. Add these environment values in the Render service settings:
@@ -83,7 +84,7 @@ The app does not scrape YouTube pages, collect email addresses or phone numbers,
    - `YOUTUBE_API_KEY` — optional until live YouTube search is needed
 
 5. Set `TRUSTED_CLIENT_IP_HEADER=cf-connecting-ip` as configured by the Blueprint. Keep `APP_URL` set to the service's public HTTPS URL.
-6. Deploy manually from Render after reviewing the commit. The app listens on Render's `PORT` and uses `/api/health` as its health check.
+6. Render automatically deploys commits pushed to its connected branch when auto-deploy is enabled. Watch the deployment in the Render dashboard; use manual deploy only when you intentionally need one. The app listens on Render's `PORT` and uses `/api/health` as its health check.
 7. Check `https://YOUR_APP/api/health`. It should show `database: "connected"`; after adding the YouTube key, it should show `youtube: "configured"`. This endpoint does not verify every migration or scheduled task.
 
 Render’s official guides cover [web services](https://render.com/docs/web-services), [environment variables](https://render.com/docs/configure-environment-variables), and [Node versions](https://render.com/docs/node-version).
@@ -142,6 +143,7 @@ The app stores search phrases, filters, app request counts, creator follow-up no
 - Recent public video inspection is implemented on demand. Evidence and contact details are user-entered and source-backed; automatic discovery, link checking, background enrichment, billing, email sending, and notifications are not implemented.
 - AI-backed natural-language interpretation is not connected. The current helper is rule-based and asks the user to review the draft.
 - YouTube-derived opportunity scores are intentionally not implemented because of the developer policy restriction above.
+- Website scanning, crawling, and website-derived opportunity reports are not implemented; see [docs/website-intelligence-architecture.md](docs/website-intelligence-architecture.md).
 - The admin area shows actual application records. Channel totals, analyzed leads, revenue, and Google Cloud quota are shown as unavailable where this app does not collect those values.
 - App-side limits reduce bursts but do not report Google Cloud’s complete quota use.
 - YouTube response data stays in memory and in the browser response only. The app does not seed fictional channels, prospects, or tasks into a real account.

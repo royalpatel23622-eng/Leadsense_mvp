@@ -23,7 +23,8 @@ git diff --check
 
 Automated tests cannot prove these external behaviors. On a staging Supabase project and staging app, verify:
 
-- Apply migrations 005 and 006 after the previously applied migrations; inspect their functions and `cron.job` entries.
+- Apply migration 007 after the previously applied migrations; confirm the signup trigger still exists and API roles cannot execute its SECURITY DEFINER function.
+- Inspect the required database functions, RLS/ownership behavior, and `cron.job` entries on staging.
 - Confirm an expired creator has only its YouTube fields scrubbed while notes, evidence, contacts, and custom label remain.
 - Confirm two accounts cannot read or modify each other's creator records.
 - Sign up, log in, refresh an expired session, log out, and confirm the old session is rejected by Supabase.
